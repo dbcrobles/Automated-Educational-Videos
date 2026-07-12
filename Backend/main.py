@@ -13,11 +13,22 @@ from nodes.asset_fetcher import node3_asset_fetcher
 from nodes.render_worker import node4_render_worker
 from nodes.publisher import node6_publisher
 
+HEARTBEAT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orchestrator.heartbeat')
+
+def write_heartbeat():
+    """Touch a file so the dashboard can show 'Engine Running / Stopped'."""
+    try:
+        with open(HEARTBEAT_PATH, 'w') as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
+
 def main():
     print("Starting Short-Form Video Generation Pipeline Orchestrator...")
     print("Running strictly sequentially to preserve 18GB memory footprint.")
 
     while True:
+        write_heartbeat()
         try:
             # Node 1: Scripting (Gemini API)
             node1_scripting.run()

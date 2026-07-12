@@ -31,6 +31,8 @@ def migrate():
         ("save_to_desktop", "INTEGER DEFAULT 1"),
         ("script_retry_count", "INTEGER DEFAULT 0"),
         ("api_cost_estimate", "REAL DEFAULT 0"),
+        ("final_path", "TEXT"),
+        ("voice_name", "TEXT"),
     ]
     for col, defn in migrations:
         try:

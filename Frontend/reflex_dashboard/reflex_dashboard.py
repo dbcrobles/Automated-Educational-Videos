@@ -66,12 +66,16 @@ class VideoModel(BaseModel):
     post_x: bool
     affiliate_url: str
     api_cost_estimate: float = 0.0
+    final_path: str = ""
+    voice_name: str = ""
+    stage_pct: int = 0
 
 class BatchSplitOutput(BaseModel):
     sub_topics: list[str]
 
 class State(rx.State):
     videos: list[VideoModel] = []
+    engine_online: bool = False
 
     # Form fields
     new_topic: str = ""
@@ -176,6 +180,20 @@ class State(rx.State):
         self.load_intros()
         self.load_settings()
 
+    @rx.event
+    def tick(self, date: str):
+        """Auto-refresh driven by an invisible rx.moment timer."""
+        self.load_videos()
+
+    def _check_engine(self):
+        """Orchestrator heartbeat: main.py touches this file every loop."""
+        hb = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Backend', 'orchestrator.heartbeat')
+        try:
+            import time as _time
+            self.engine_online = (_time.time() - os.path.getmtime(hb)) < 60
+        except OSError:
+            self.engine_online = False
+
     def load_videos(self):
         conn = database.get_connection()
         conn.row_factory = database.sqlite3.Row
@@ -186,6 +204,11 @@ class State(rx.State):
 
         # Convert sqlite3.Row to dict to allow .get() with fallbacks
         rows_dicts = [dict(row) for row in rows]
+
+        def _stage_pct(status):
+            if status in PIPELINE_STAGES:
+                return round((PIPELINE_STAGES.index(status) + 1) * 100 / len(PIPELINE_STAGES))
+            return 0
 
         self.videos = [
             VideoModel(
@@ -207,14 +230,19 @@ class State(rx.State):
                 post_x=bool(row.get('post_x', 0)),
                 affiliate_url=row.get('affiliate_url') or "",
                 api_cost_estimate=row.get('api_cost_estimate') or 0.0,
+                final_path=row.get('final_path') or "",
+                voice_name=row.get('voice_name') or "",
+                stage_pct=_stage_pct(row['status']),
             )
             for row in rows_dicts
         ]
 
         # Prepare video previews for QA_Final videos
         for row in rows_dicts:
-            if row.get('status') == 'QA_Final' and row.get('video_path'):
+            if row.get('status') == 'QA_Final':
                 self.prepare_preview(row['id'])
+
+        self._check_engine()
 
     def add_video(self):
         if not self.new_topic:
@@ -378,9 +406,13 @@ class State(rx.State):
         preview_path = os.path.join(frontend_assets, f'preview_{video_id}.mp4')
         conn = database.get_connection()
         conn.row_factory = database.sqlite3.Row
-        row = conn.execute("SELECT video_path FROM videos WHERE id = ?", (video_id,)).fetchone()
+        row = conn.execute("SELECT final_path, video_path FROM videos WHERE id = ?", (video_id,)).fetchone()
         conn.close()
-        src = row['video_path'] if row else None
+        src = None
+        if row:
+            src = row['final_path'] or database.asset_path(video_id, 'final.mp4')
+            if (not src or not os.path.exists(src)) and row['video_path'] and not str(row['video_path']).startswith('['):
+                src = row['video_path']
         if src and os.path.exists(src):
             if os.path.exists(preview_path) or os.path.islink(preview_path):
                 os.remove(preview_path)
@@ -562,6 +594,13 @@ def render_video_card(video: VideoModel) -> rx.Component:
                                 color_scheme="grass", radius="full", size="1"
                             )
                         ),
+                        rx.cond(
+                            video.voice_name != "",
+                            rx.badge(
+                                f"🎙 {video.voice_name}",
+                                color_scheme="violet", radius="full", size="1"
+                            )
+                        ),
                         spacing="2",
                         align="center",
                     ),
@@ -575,6 +614,12 @@ def render_video_card(video: VideoModel) -> rx.Component:
                 ),
                 align="start",
                 width="100%",
+            ),
+
+            # ── Pipeline progress stepper ─────────────────────────────
+            rx.cond(
+                (video.status != "Failed") & (video.status != "Published"),
+                rx.progress(value=video.stage_pct, size="1", color_scheme="blue", width="100%"),
             ),
 
             rx.divider(margin_y="2"),
@@ -719,7 +764,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                     rx.box(
                         rx.hstack(
                             rx.text("📁", font_size="18px"),
-                            rx.text(video.video_path, size="2", font_family="monospace", color="gray"),
+                            rx.text(video.final_path, size="2", font_family="monospace", color="gray"),
                             spacing="2",
                             align="center",
                         ),
@@ -729,7 +774,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                         width="100%",
                     ),
                     rx.cond(
-                        video.video_path != "",
+                        video.final_path != "",
                         rx.video(
                             src=f"/preview_{video.id}.mp4",
                             width="100%",
@@ -1309,24 +1354,43 @@ def index() -> rx.Component:
                             align="start",
                         ),
                         rx.spacer(),
-                        rx.box(
-                            rx.hstack(
-                                rx.box(width="8px", height="8px", border_radius="50%", background="green", display="inline-block"),
-                                rx.text("Pipeline Active", size="2", color="green", weight="medium"),
-                                spacing="2",
-                                align="center",
+                        rx.cond(
+                            State.engine_online,
+                            rx.box(
+                                rx.hstack(
+                                    rx.box(width="8px", height="8px", border_radius="50%", background="green", display="inline-block"),
+                                    rx.text("Engine Running", size="2", color="green", weight="medium"),
+                                    spacing="2",
+                                    align="center",
+                                ),
+                                background="var(--green-2)",
+                                border="1px solid var(--green-5)",
+                                border_radius="full",
+                                padding_x="3",
+                                padding_y="1",
                             ),
-                            background="var(--green-2)",
-                            border="1px solid var(--green-5)",
-                            border_radius="full",
-                            padding_x="3",
-                            padding_y="1",
+                            rx.box(
+                                rx.hstack(
+                                    rx.box(width="8px", height="8px", border_radius="50%", background="red", display="inline-block"),
+                                    rx.text("Engine Stopped — run Backend/main.py", size="2", color="red", weight="medium"),
+                                    spacing="2",
+                                    align="center",
+                                ),
+                                background="var(--red-2)",
+                                border="1px solid var(--red-5)",
+                                border_radius="full",
+                                padding_x="3",
+                                padding_y="1",
+                            ),
                         ),
                         align="center",
                         width="100%",
                     ),
                     margin_bottom="6",
                 ),
+
+                # Invisible timer: refreshes the queue every 5 seconds
+                rx.moment(interval=5000, on_change=State.tick, display="none"),
 
                 # ── Tabs ─────────────────────────────────────────────
                 rx.tabs.root(

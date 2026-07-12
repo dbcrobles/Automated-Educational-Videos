@@ -28,11 +28,12 @@ def generate_platform_caption(video_record, platform):
     account = video_record.get('account_id', 'default').replace('_', '')
 
     if platform == 'tiktok':
-        return f"{hook_text} #AI #LearnOnTikTok"
+        return f"{hook_text} #AI #LearnOnTikTok #AIGC"
     elif platform == 'instagram':
-        return f"{title}\n\n{cta}\n\n#Reels\nLink in bio!"
+        return f"{title}\n\n{cta}\n\nAI-assisted content.\n\n#Reels\nLink in bio!"
     elif platform == 'youtube':
-        return f"{title}\n\n{cta}\n\nSources:\n{sources_str}\n\n#Shorts"
+        return (f"{title}\n\n{cta}\n\nSources:\n{sources_str}\n\n"
+                f"This video was created with AI assistance.\n\n#Shorts")
     elif platform == 'snapchat':
         cap = hook_text
         if len(cap) > 150: cap = cap[:147] + "..."
@@ -56,19 +57,35 @@ def publish_x(video_record):
     caption = generate_platform_caption(video_record, 'x')
     print(f"X Publisher: Posted tweet with caption: {caption}")
 
+def resolve_final_video(video_record):
+    """The rendered deliverable: final_path (new) → assets/{id}/final.mp4 → legacy video_path."""
+    candidates = [
+        video_record.get('final_path'),
+        database.asset_path(video_record['id'], 'final.mp4'),
+    ]
+    vp = video_record.get('video_path') or ''
+    if vp and not vp.strip().startswith('['):  # ignore scene-list JSON arrays
+        candidates.append(vp)
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
 def publish_video(video_record):
+    video_path = resolve_final_video(video_record)
+    if not video_path:
+        raise Exception("Final video file not found. Cannot publish.")
+
     # Desktop Banking Feature
     if video_record.get('save_to_desktop'):
         try:
             desktop_dir = os.path.expanduser(f"~/Desktop/Video_Content_Bank/{video_record['account_id']}")
             os.makedirs(desktop_dir, exist_ok=True)
-            video_path = video_record.get('video_path')
-            
-            if video_path and os.path.exists(video_path):
-                safe_title = "".join(c if c.isalnum() else "_" for c in video_record['topic'])
-                dest_path = os.path.join(desktop_dir, f"{safe_title}_{video_record['id']}.mp4")
-                shutil.copy2(video_path, dest_path)
-                print(f"Content Bank: Saved offline copy to {dest_path}")
+            safe_title = "".join(c if c.isalnum() else "_" for c in video_record['topic'])
+            dest_path = os.path.join(desktop_dir, f"{safe_title}_{video_record['id']}.mp4")
+            shutil.copy2(video_path, dest_path)
+            print(f"Content Bank: Saved offline copy to {dest_path}")
         except Exception as e:
             print(f"Warning: Failed to save to Content Bank: {e}")
 
@@ -76,17 +93,7 @@ def publish_video(video_record):
     api_key = os.environ.get("WOOPSOCIAL_API_KEY")
     if not api_key:
         raise Exception("WOOPSOCIAL_API_KEY environment variable not set. Cannot publish.")
-        
-    video_path = video_record.get('video_path')
-    if not video_path or not os.path.exists(video_path):
-        raise Exception("Video file not found. Cannot publish.")
-        
-    try:
-        script_data = json.loads(video_record['script'])
-        title = script_data.get('title', video_record['topic'])
-    except:
-        title = video_record['topic']
-        
+
     # Build platform list based on user toggles
     platforms = []
     if video_record.get('post_yt'): platforms.append("youtube")
@@ -103,36 +110,47 @@ def publish_video(video_record):
     if not platforms:
         print(f"Video {video_record['id']} has no WoopSocial platforms toggled ON. Skipping WoopSocial.")
         return True # Act as if it succeeded so it clears the queue
-        
-    # We still use WoopSocial for TT/IG/YT, but now with a generalized caption
-    caption = generate_platform_caption(video_record, 'tiktok') # arbitrary fallback
-    
-    print(f"Publishing Video {video_record['id']} to {', '.join(platforms)} via WoopSocial...")
-    
+
+    # One POST per platform so each gets its own tailored caption
     url = "https://api.woopsocial.com/v1/posts"
-    headers = {
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    data = {
-        "platforms": json.dumps(platforms),
-        "text": caption
-    }
-    
-    with open(video_path, 'rb') as f:
-        files = {
-            "media": (os.path.basename(video_path), f, "video/mp4")
-        }
-        
+    headers = {"Authorization": f"Bearer {api_key}"}
+    succeeded, failed = [], []
+
+    for platform in platforms:
+        caption = generate_platform_caption(video_record, platform)
+        print(f"Publishing Video {video_record['id']} to {platform} via WoopSocial...")
+        data = {"platforms": json.dumps([platform]), "text": caption}
         try:
-            response = requests.post(url, headers=headers, data=data, files=files, timeout=60)
-            response.raise_for_status()
-            print(f"WoopSocial Success: {response.json()}")
+            with open(video_path, 'rb') as f:
+                files = {"media": (os.path.basename(video_path), f, "video/mp4")}
+                response = requests.post(url, headers=headers, data=data, files=files, timeout=120)
+                response.raise_for_status()
+            succeeded.append(platform)
         except Exception as e:
-            print(f"WoopSocial API returned an error: {str(e)}")
-            raise Exception(f"WoopSocial API Error: {str(e)}")
-            
+            failed.append(f"{platform} — {e}")
+
+    if failed:
+        raise Exception(
+            f"WoopSocial API Error. Published: {', '.join(succeeded) or 'none'}. "
+            f"FAILED: {'; '.join(failed)}")
+
     return True
+
+
+def cleanup_intermediates(video_record):
+    """After publish, delete per-video intermediates except final.mp4. Never fatal."""
+    try:
+        assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'assets')
+        vid_dir = os.path.join(assets_dir, str(video_record['id']))
+        if os.path.isdir(vid_dir):
+            for name in os.listdir(vid_dir):
+                if name != 'final.mp4':
+                    path = os.path.join(vid_dir, name)
+                    if os.path.isfile(path):
+                        os.remove(path)
+            print(f"Cleanup: removed intermediates for video {video_record['id']}")
+    except Exception as e:
+        print(f"Warning: cleanup failed for video {video_record['id']}: {e}")
 
 def run():
     print("Node 6: Publisher worker started.")
@@ -148,6 +166,7 @@ def run():
                 'status': 'Published',
                 'error_message': None
             })
+            cleanup_intermediates(video)
             print(f"Updated video ID {video['id']} to Published")
             
         except Exception as e:

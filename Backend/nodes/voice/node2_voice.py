@@ -19,6 +19,49 @@ ELEVENLABS_API_KEY = os.environ.get('ELEVENLABS_API_KEY')
 
 DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"
 
+# Voice pool tagged by the moods each voice suits.  music_mood comes from the
+# script (Node 1): "tense" | "uplifting" | "mysterious" | "neutral".
+VOICE_POOL = [
+    {"id": "nPczCjzI2devNBz1zQrb", "name": "Brian (American, deep)",       "moods": ["tense", "mysterious", "neutral"]},
+    {"id": "IKne3meq5aSn9XLyUdCD", "name": "Charlie (American, natural)",  "moods": ["uplifting", "neutral"]},
+    {"id": "JBFqnCBsd6RMkjVDRZzb", "name": "George (British, warm)",       "moods": ["tense", "mysterious", "neutral"]},
+    {"id": "TX3LPaxmHKxFdv7VOQHJ", "name": "Liam (American, articulate)",  "moods": ["tense", "neutral"]},
+    {"id": "bIHbv24MWmeRgasZH58o", "name": "Will (American, friendly)",    "moods": ["uplifting", "neutral"]},
+    {"id": "9BWtsMINqrJLrRacOk9x", "name": "Aria (American, expressive)",  "moods": ["uplifting", "mysterious"]},
+    {"id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah (American, calm)",       "moods": ["mysterious", "neutral"]},
+    {"id": "FGY2WhTYpPnrIDTdsKH5", "name": "Laura (American, upbeat)",     "moods": ["uplifting"]},
+    {"id": "Xb7hH8MSUJpSbSDYk0k2", "name": "Alice (British, confident)",   "moods": ["tense", "uplifting", "neutral"]},
+    {"id": "SAz9YHcvj6GT2YYXdXww", "name": "River (American, neutral)",    "moods": ["mysterious", "neutral"]},
+]
+
+def select_voice(video_id, script_json_str, account_settings):
+    """Pick a voice for this video.
+
+    - account voice_mode == "fixed" → always use the account's configured voice.
+    - otherwise (default "random") → random voice from the pool matching the
+      script's music_mood, seeded by video_id so re-runs pick the same voice.
+    Returns (voice_id, voice_name).
+    """
+    import random
+
+    if account_settings.get('voice_mode') == 'fixed':
+        vid = account_settings.get('elevenlabs_voice_id', DEFAULT_VOICE_ID)
+        name = account_settings.get('elevenlabs_voice_name', vid)
+        return vid, name
+
+    mood = 'neutral'
+    try:
+        mood = json.loads(script_json_str).get('music_mood', 'neutral') or 'neutral'
+    except Exception:
+        pass
+
+    matches = [v for v in VOICE_POOL if mood in v['moods']]
+    if not matches:
+        matches = VOICE_POOL
+    choice = random.Random(video_id).choice(matches)
+    print(f"Node 2: mood='{mood}' → voice '{choice['name']}'")
+    return choice['id'], choice['name']
+
 def _chars_to_words(alignment):
     """Convert ElevenLabs character-level alignment to word-level list."""
     chars = alignment['characters']
@@ -150,13 +193,14 @@ def run():
     for video in videos:
         print(f"Generating voiceover for video ID {video['id']}")
         account_settings = ACCOUNTS_CONFIG.get(video['account_id'], {})
-        voice_id = account_settings.get('elevenlabs_voice_id', DEFAULT_VOICE_ID)
+        voice_id, voice_name = select_voice(video['id'], video['script'], account_settings)
 
         try:
             audio_path = generate_voiceover(video['id'], video['script'], voice_id)
 
             database.update_video(video['id'], {
                 'voiceover_path': audio_path,
+                'voice_name': voice_name,
                 'status': 'Pending_Assets',
                 'error_message': None
             })

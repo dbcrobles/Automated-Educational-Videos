@@ -8,8 +8,9 @@ import {
   staticFile,
   useCurrentFrame,
 } from "remotion";
-import { TransitionSeries, linear } from "@remotion/transitions";
+import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
+import { slide } from "@remotion/transitions/slide";
 import { Captions } from "./Captions";
 import { ComplianceOverlay } from "./ComplianceOverlay";
 
@@ -85,7 +86,7 @@ export const ShortVideo: React.FC<{
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       {music && (
-        <Audio src={staticFile(music.src)} loop volume={musicVolume(useCurrentFrame())} />
+        <Audio src={staticFile(music.src)} loop volume={(f) => musicVolume(f)} />
       )}
 
       {intro && (
@@ -117,8 +118,8 @@ export const ShortVideo: React.FC<{
                 </TransitionSeries.Sequence>
                 {!isLast && trans && (
                   <TransitionSeries.Transition
-                    presentation={fade()}
-                    timing={linear(trans.durationInFrames)}
+                    presentation={trans.type === "whip_pan" ? slide() : fade()}
+                    timing={linearTiming({ durationInFrames: trans.durationInFrames })}
                   />
                 )}
               </React.Fragment>
