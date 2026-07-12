@@ -30,5 +30,27 @@ CREATE TABLE IF NOT EXISTS videos (
     script_retry_count INTEGER DEFAULT 0,
     api_cost_estimate REAL DEFAULT 0,
     final_path TEXT,
-    voice_name TEXT
+    voice_name TEXT,
+    research_dossier TEXT,
+    storyboard_draft TEXT,
+    script_cost_estimate REAL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER NOT NULL,
+    node TEXT NOT NULL,
+    error_code TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details_json TEXT,
+    attempt INTEGER DEFAULT 1,
+    cost_snapshot REAL DEFAULT 0,
+    occurrence_count INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'open',
+    auto_recovered INTEGER DEFAULT 0,
+    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP,
+    FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
 );

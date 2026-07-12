@@ -68,6 +68,11 @@ class VideoModel(BaseModel):
     api_cost_estimate: float = 0.0
     final_path: str = ""
     voice_name: str = ""
+    script_cost_estimate: float = 0.0
+    error_code: str = ""
+    error_repeat_count: int = 0
+    error_attempt: int = 0
+    error_cost_snapshot: float = 0.0
     stage_pct: int = 0
 
 class BatchSplitOutput(BaseModel):
@@ -204,6 +209,17 @@ class State(rx.State):
 
         # Convert sqlite3.Row to dict to allow .get() with fallbacks
         rows_dicts = [dict(row) for row in rows]
+        conn = database.get_connection()
+        conn.row_factory = database.sqlite3.Row
+        incident_rows = conn.execute("""
+            SELECT e.* FROM pipeline_errors e
+            JOIN (
+                SELECT video_id, MAX(id) AS max_id FROM pipeline_errors
+                WHERE status='open' GROUP BY video_id
+            ) latest ON latest.max_id=e.id
+        """).fetchall()
+        conn.close()
+        incidents = {row['video_id']: dict(row) for row in incident_rows}
 
         def _stage_pct(status):
             if status in PIPELINE_STAGES:
@@ -232,6 +248,11 @@ class State(rx.State):
                 api_cost_estimate=row.get('api_cost_estimate') or 0.0,
                 final_path=row.get('final_path') or "",
                 voice_name=row.get('voice_name') or "",
+                script_cost_estimate=row.get('script_cost_estimate') or 0.0,
+                error_code=incidents.get(row['id'], {}).get('error_code', ''),
+                error_repeat_count=incidents.get(row['id'], {}).get('occurrence_count', 0),
+                error_attempt=incidents.get(row['id'], {}).get('attempt', 0),
+                error_cost_snapshot=incidents.get(row['id'], {}).get('cost_snapshot', 0.0),
                 stage_pct=_stage_pct(row['status']),
             )
             for row in rows_dicts
@@ -361,7 +382,11 @@ class State(rx.State):
     def retry_from_scratch(self, video_id: int):
         """Hard reset — always starts from Node 1 (scripting)."""
         note = str(self.rejection_notes.get(video_id, "")).strip()
-        updates = {'status': 'Pending_Script', 'error_message': None}
+        updates = {
+            'status': 'Pending_Script', 'error_message': None,
+            'research_dossier': None, 'storyboard_draft': None,
+            'script_retry_count': 0, 'script_cost_estimate': 0,
+        }
         if note:
             updates['qa_feedback'] = note
         database.update_video(video_id, updates)
@@ -369,9 +394,12 @@ class State(rx.State):
         self.load_videos()
 
     def reject_to_script(self, video_id: int):
-        """Send back to Node 1 with editor note — full rewrite.  Wastes ElevenLabs + render."""
+        """Revise the storyboard while preserving the expensive research checkpoint."""
         note = str(self.rejection_notes.get(video_id, "")).strip()
-        updates = {'status': 'Pending_Script', 'error_message': None}
+        updates = {
+            'status': 'Pending_Script', 'error_message': None,
+            'storyboard_draft': None, 'script_retry_count': 0,
+        }
         if note:
             updates['qa_feedback'] = note
         database.update_video(video_id, updates)
@@ -595,6 +623,13 @@ def render_video_card(video: VideoModel) -> rx.Component:
                             )
                         ),
                         rx.cond(
+                            video.script_cost_estimate > 0,
+                            rx.badge(
+                                f"🧠 Script: ${video.script_cost_estimate:.2f}",
+                                color_scheme="amber", radius="full", size="1"
+                            )
+                        ),
+                        rx.cond(
                             video.voice_name != "",
                             rx.badge(
                                 f"🎙 {video.voice_name}",
@@ -629,7 +664,18 @@ def render_video_card(video: VideoModel) -> rx.Component:
                 video.status == "Failed",
                 rx.vstack(
                     rx.box(
-                        rx.text(video.error_message, size="2", color="tomato"),
+                        rx.vstack(
+                            rx.hstack(
+                                rx.badge(video.error_code, color_scheme="red", size="1"),
+                                rx.text(
+                                    f"Attempt {video.error_attempt} · repeated {video.error_repeat_count}x · cost at error ${video.error_cost_snapshot:.2f}",
+                                    size="1", color="gray",
+                                ),
+                                spacing="2", wrap="wrap",
+                            ),
+                            rx.text(video.error_message, size="2", color="tomato"),
+                            align="start", spacing="2",
+                        ),
                         background="var(--red-2)",
                         border="1px solid var(--red-5)",
                         border_radius="8px",

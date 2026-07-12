@@ -513,15 +513,13 @@ def run():
                 }),
                 'error_message': None,
             })
+            database.resolve_pipeline_errors(video['id'], 'Node 4')
             print(f"Node 4: Video {video['id']} → {next_status}. Output: {final_path}")
 
         except Exception as e:
             msg = str(e)
             print(f"Node 4: FAILED video {video['id']}: {msg}")
-            database.update_video(video['id'], {
-                'status': 'Failed',
-                'error_message': f"Node 4 (Render) Error: {msg}",
-            })
+            database.fail_video(video['id'], 'Node 4', 'RENDER_FAILED', msg)
 
 
 if __name__ == "__main__":

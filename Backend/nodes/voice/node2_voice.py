@@ -302,15 +302,13 @@ def run():
                 'status': 'Pending_Assets',
                 'error_message': None
             })
+            database.resolve_pipeline_errors(video['id'], 'Node 2')
             print(f"Updated video ID {video['id']} to Pending_Assets")
 
         except Exception as e:
             error_str = str(e)
             print(f"Failed to generate voiceover: {error_str}")
-            database.update_video(video['id'], {
-                'status': 'Failed',
-                'error_message': f"Node 2 (Voice) Error: {error_str}"
-            })
+            database.fail_video(video['id'], 'Node 2', 'VOICE_GENERATION', error_str)
 
 if __name__ == "__main__":
     while True:

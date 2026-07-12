@@ -166,16 +166,15 @@ def run():
                 'status': 'Published',
                 'error_message': None
             })
+            database.resolve_pipeline_errors(video['id'], 'Node 6')
             cleanup_intermediates(video)
             print(f"Updated video ID {video['id']} to Published")
             
         except Exception as e:
             error_str = str(e)
             print(f"Failed to publish video: {error_str}")
-            database.update_video(video['id'], {
-                'status': 'Failed',
-                'error_message': f"Node 6 (Publisher) Error: {error_str}"
-            })
+            code = 'PUBLISH_AUTH' if '401' in error_str else 'PUBLISH_FAILED'
+            database.fail_video(video['id'], 'Node 6', code, error_str)
 
 if __name__ == "__main__":
     while True:

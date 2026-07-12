@@ -1,6 +1,7 @@
 import time
 import os
 import sys
+import fcntl
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -14,6 +15,20 @@ from nodes.render_worker import node4_render_worker
 from nodes.publisher import node6_publisher
 
 HEARTBEAT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orchestrator.heartbeat')
+LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orchestrator.lock')
+
+def acquire_process_lock():
+    """Prevent duplicate orchestrators from spending API credits on the same video."""
+    lock_file = open(LOCK_PATH, 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("Another pipeline orchestrator is already running. Exiting.")
+        lock_file.close()
+        return None
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
 
 def write_heartbeat():
     """Touch a file so the dashboard can show 'Engine Running / Stopped'."""
@@ -24,6 +39,9 @@ def write_heartbeat():
         pass
 
 def main():
+    process_lock = acquire_process_lock()
+    if not process_lock:
+        return
     print("Starting Short-Form Video Generation Pipeline Orchestrator...")
     print("Running strictly sequentially to preserve 18GB memory footprint.")
 

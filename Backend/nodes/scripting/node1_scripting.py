@@ -19,6 +19,7 @@ COST_SCOUT_CALL = 0.03
 COST_CURATE_CALL = 0.01
 COST_DEEP_RESEARCH_CALL = 0.05
 COST_SCRIPT_CALL = 0.01
+MAX_SCRIPT_COST_PER_VIDEO = 0.25
 
 GEMINI_MODEL_RESEARCH = "gemini-3.1-pro-preview"
 GEMINI_MODEL_STRUCTURED = "gemini-3.5-flash"
@@ -281,24 +282,8 @@ def _deep_research(client, topic, anchor_urls, research_profile):
         ),
     )
 
-def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
-    ACCOUNTS_CONFIG = load_accounts_config()
-    account_settings = ACCOUNTS_CONFIG.get(account_id, {})
-    persona = account_settings.get('system_instruction', "You are a viral short-form video scriptwriter.")
-    research_profile = account_settings.get('research_profile', {
-        'anchor_source_types': ['primary research', 'official data', 'reputable explanatory reporting'],
-        'preferred_publishers': [],
-        'required_lenses': ['mechanism', 'human impact', 'limitations'],
-    })
-    approved_media = _load_approved_media_catalog()
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise Exception("GEMINI_API_KEY environment variable not set.")
-
-    client = genai.Client(api_key=api_key)
-
-    # PASS 1: Scout a broad candidate set with grounded Google Search results.
+def _build_research_dossier(client, topic, research_profile, video_id):
+    """Run expensive research once and return a checkpointable dossier."""
     scout_prompt = f"""
     Find 8-12 strong candidate sources for an evidence-led short video about "{topic}".
     Research profile: {json.dumps(research_profile)}
@@ -313,12 +298,12 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
         contents=scout_prompt,
         config=types.GenerateContentConfig(temperature=0.3, tools=[{"google_search": {}}]),
     )
+    database.add_script_cost(video_id, COST_SCOUT_CALL)
     scout_text = scout_response.text or ''
     scout_urls = _urls_from_text(scout_text) | set(_grounding_urls(scout_response))
     if len(scout_urls) < 2:
         raise Exception("Source scout found fewer than two verifiable article URLs.")
 
-    # PASS 2: Select only one or two anchors from the scout's real URL set.
     curate_prompt = f"""
     Select 1-2 anchor articles for a video about "{topic}" from ONLY the candidates below.
     Choose the smallest set that can carry the story. Prefer one empirical/official source and,
@@ -339,6 +324,7 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
             temperature=0.1,
         ),
     )
+    database.add_script_cost(video_id, COST_CURATE_CALL)
     anchor_selection = json.loads(curate_response.text or '{}').get('anchors', [])[:2]
     anchors = _validated_anchors(anchor_selection, scout_urls)
     if not anchors:
@@ -347,14 +333,17 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
     anchors = _resolve_doi_anchors(anchors)
     anchor_urls = [anchor['url'] for anchor in anchors]
 
-    # PASS 3: Read the anchors directly, then search outward for corroboration and challenge.
     deep_response = _deep_research(client, topic, anchor_urls, research_profile)
+    database.add_script_cost(video_id, COST_DEEP_RESEARCH_CALL)
     research_text = deep_response.text
     if not research_text:
         raise Exception("Anchor deep dive returned no research dossier.")
     statuses = _retrieval_statuses(deep_response, anchor_urls)
     failed = _retrieval_failures(statuses, research_text)
     if failed:
+        database.record_pipeline_error(
+            video_id, 'Node 1', 'URL_CONTEXT_RECOVERY', str(failed),
+            {'statuses': statuses}, auto_recovered=True)
         print(f"Node 1: URL Context recovery needed: {failed}")
         usable = set(anchor_urls) - set(failed)
         if usable:
@@ -374,6 +363,7 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
                     temperature=0.1,
                 ),
             )
+            database.add_script_cost(video_id, COST_CURATE_CALL)
             retry_selection = json.loads(retry_response.text or '{}').get('anchors', [])
             anchors = _validated_anchors(
                 retry_selection, scout_urls, set(failed) | set(selected_scout_urls))
@@ -382,6 +372,7 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
             anchors = _resolve_doi_anchors(anchors)
         anchor_urls = [anchor['url'] for anchor in anchors]
         deep_response = _deep_research(client, topic, anchor_urls, research_profile)
+        database.add_script_cost(video_id, COST_DEEP_RESEARCH_CALL)
         research_text = deep_response.text
         if not research_text:
             raise Exception("Recovered anchor deep dive returned no research dossier.")
@@ -391,9 +382,35 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
             raise Exception(f"URL Context could not retrieve the recovered anchors: {failed}")
     dossier = json.loads(research_text)
     dossier['anchors'] = anchors
-    verified_research_urls = (
-        set(anchor_urls) | _urls_from_text(research_text) | set(_grounding_urls(deep_response))
-    )
+    verified_urls = set(anchor_urls) | _urls_from_text(research_text) | set(_grounding_urls(deep_response))
+    return dossier, verified_urls
+
+def generate_script(topic, account_id, video_id, qa_feedback=None, cta_text=None,
+                    cached_research=None, previous_draft=None):
+    ACCOUNTS_CONFIG = load_accounts_config()
+    account_settings = ACCOUNTS_CONFIG.get(account_id, {})
+    persona = account_settings.get('system_instruction', "You are a viral short-form video scriptwriter.")
+    research_profile = account_settings.get('research_profile', {
+        'anchor_source_types': ['primary research', 'official data', 'reputable explanatory reporting'],
+        'preferred_publishers': [],
+        'required_lenses': ['mechanism', 'human impact', 'limitations'],
+    })
+    approved_media = _load_approved_media_catalog()
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise Exception("GEMINI_API_KEY environment variable not set.")
+
+    client = genai.Client(api_key=api_key)
+
+    if cached_research:
+        print("Node 1: Reusing saved research dossier (passes 1-3 skipped).")
+        dossier = json.loads(cached_research)
+        verified_research_urls = _urls_from_text(cached_research)
+    else:
+        dossier, verified_research_urls = _build_research_dossier(
+            client, topic, research_profile, video_id)
+        database.update_video(video_id, {'research_dossier': json.dumps(dossier)})
 
     # PASS 4: Structured storyboard generation.
     selected_vibe = random.choice(VIBES)
@@ -406,6 +423,11 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
     "{qa_feedback.strip()}"
     Specifically correct or improve what the editor described above.
     Do not repeat the same approach that caused the rejection.
+"""
+    if previous_draft:
+        revision_block += f"""
+    Revise this previous storyboard instead of starting over:
+    {previous_draft}
 """
 
     script_prompt = f"""
@@ -489,6 +511,7 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
             temperature=0.7
         ),
     )
+    database.add_script_cost(video_id, COST_SCRIPT_CALL)
 
     result_text = script_response.text
     if not result_text:
@@ -528,6 +551,65 @@ def _coerce_enums(output):
         if directives.get('caption_style') not in VALID_CAPTION_STYLES:
             directives['caption_style'] = 'bottom_center'
         scene['editing_directives'] = directives
+    return output
+
+def _apply_safe_fallbacks(output, expected_cta):
+    """Repair deterministic formatting problems without another model call."""
+    scenes = output.get('scenes', [])
+    evidence = output.get('_research', {}).get('evidence_ledger', [])
+    evidence_urls = {item.get('source_url') for item in evidence}
+    total_duration = sum(scene.get('duration_seconds', 0) for scene in scenes)
+    for scene in scenes:
+        words = len(scene.get('narration', '').split())
+        duration = scene.get('duration_seconds', 4)
+        required = min(12.0, words / 3.3) if words else duration
+        increase = min(max(0, required - duration), max(0, 100 - total_duration))
+        if increase:
+            scene['duration_seconds'] = round(duration + increase, 1)
+            total_duration += increase
+
+        queries = []
+        for query in scene.get('visual_search_queries', []):
+            parts = str(query).split()[:5]
+            if len(parts) == 1:
+                parts.append('people')
+            if parts:
+                queries.append(' '.join(parts))
+        scene['visual_search_queries'] = queries or ['people walking city']
+
+        chart = scene.get('chart')
+        if chart:
+            points = chart.get('points', [])
+            values = [point.get('value') for point in points]
+            valid_values = 2 <= len(points) <= 6 and all(
+                isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+                for value in values)
+            claims_match = valid_values and chart.get('source_url') in evidence_urls and all(
+                any(item.get('source_url') == chart.get('source_url')
+                    and item.get('numeric_value') is not None
+                    and math.isclose(point['value'], item['numeric_value'], rel_tol=1e-6, abs_tol=1e-6)
+                    and (not item.get('unit') or item.get('unit') == chart.get('unit'))
+                    for item in evidence)
+                for point in points)
+            valid_pie = chart.get('chart_type') != 'pie' or (
+                valid_values and math.isclose(sum(values), 100, abs_tol=1))
+            if (not claims_match or not valid_pie
+                    or (scene.get('licensed_media') or {}).get('playback_mode') == 'source_audio'):
+                scene['chart'] = None
+
+    if scenes and scenes[-1].get('narration'):
+        narration = scenes[-1]['narration'].rstrip()
+        if not narration.endswith(expected_cta):
+            scenes[-1]['narration'] = f"{narration} {expected_cta}"
+    if scenes and not any(len(scene.get('visual_search_queries', [])) >= 2 for scene in scenes):
+        fallback = 'people walking city'
+        if fallback not in scenes[0]['visual_search_queries']:
+            scenes[0]['visual_search_queries'].append(fallback)
+    if not output.get('sources'):
+        output['sources'] = [
+            anchor.get('url') for anchor in output.get('_research', {}).get('anchors', [])
+            if anchor.get('url')
+        ]
     return output
 
 def _quality_issues(output, expected_cta):
@@ -641,40 +723,51 @@ def run():
             config_cta = load_accounts_config().get(video['account_id'], {}).get('default_cta', "Follow for more")
             target_cta = video.get('cta_text') or config_cta
 
+            if (video.get('script_cost_estimate') or 0) >= MAX_SCRIPT_COST_PER_VIDEO:
+                database.fail_video(
+                    video['id'], 'Node 1', 'SCRIPT_COST_LIMIT',
+                    f"Node 1 spend reached ${video['script_cost_estimate']:.2f}; automatic retries stopped.",
+                    attempt=video.get('script_retry_count') or 0)
+                continue
+
             output = generate_script(
-                video['topic'], video['account_id'],
+                video['topic'], video['account_id'], video['id'],
                 qa_feedback=video.get('qa_feedback'),
-                cta_text=target_cta
+                cta_text=target_cta,
+                cached_research=video.get('research_dossier'),
+                previous_draft=video.get('storyboard_draft'),
             )
 
-            # Cost logging
-            database.add_cost(video['id'], COST_SCOUT_CALL)
-            database.add_cost(video['id'], COST_CURATE_CALL)
-            database.add_cost(video['id'], COST_DEEP_RESEARCH_CALL)
-            database.add_cost(video['id'], COST_SCRIPT_CALL)
-
-            # Coerce invalid enums
+            # Cheap deterministic repairs happen before any paid retry.
             output = _coerce_enums(output)
+            output = _apply_safe_fallbacks(output, target_cta)
+            database.update_video(video['id'], {
+                'storyboard_draft': json.dumps({
+                    key: value for key, value in output.items() if key != '_research'
+                }),
+            })
 
             # Post-generation validation: narration, rhythm, sourcing, and required structure
             issues = _quality_issues(output, target_cta)
             if issues:
                 retry_count = (video.get('script_retry_count') or 0) + 1
                 reason = "; ".join(issues) + "."
-                if retry_count < 2:
+                _, repeat_count = database.record_pipeline_error(
+                    video['id'], 'Node 1', 'STORYBOARD_QA', reason,
+                    {'issues': issues}, retry_count)
+                if retry_count < 2 and repeat_count < 2:
                     database.update_video(video['id'], {
                         'status': 'Pending_Script',
                         'script_retry_count': retry_count,
-                        'qa_feedback': f"Auto-rejected: {reason}",
+                        'qa_feedback': f"Repair only these remaining issues: {reason}",
                         'error_message': None,
                     })
-                    print(f"Video {video['id']} auto-rejected (attempt {retry_count}): {reason}")
+                    print(f"Video {video['id']} queued for one storyboard-only repair: {reason}")
                 else:
-                    database.update_video(video['id'], {
-                        'status': 'Failed',
-                        'error_message': f"Script generation failed after {retry_count} attempts: {reason}",
-                        'script_retry_count': retry_count,
-                    })
+                    database.fail_video(
+                        video['id'], 'Node 1', 'STORYBOARD_QA_REPEAT', reason,
+                        {'issues': issues}, retry_count)
+                    database.update_video(video['id'], {'script_retry_count': retry_count})
                     print(f"Video {video['id']} FAILED after {retry_count} retries.")
                 continue
 
@@ -689,16 +782,18 @@ def run():
                 'script_retry_count': 0,
                 'qa_feedback': None,
                 'error_message': None,
+                'storyboard_draft': None,
             })
+            database.resolve_pipeline_errors(video['id'], 'Node 1')
             print(f"Video {video['id']} → {next_status}")
 
         except Exception as e:
             error_str = str(e)
             print(f"Failed to generate script for video ID {video['id']}: {error_str}")
-            database.update_video(video['id'], {
-                'status': 'Failed',
-                'error_message': f"Node 1 (Scripting) Error: {error_str}"
-            })
+            code = 'URL_CONTEXT' if 'URL Context' in error_str else 'SCRIPTING_EXCEPTION'
+            database.fail_video(
+                video['id'], 'Node 1', code, error_str,
+                attempt=(video.get('script_retry_count') or 0) + 1)
 
 if __name__ == "__main__":
     while True:

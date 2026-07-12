@@ -284,7 +284,7 @@ def run():
             script_data = json.loads(video['script'])
             scenes = script_data.get('scenes', [])
         except Exception as e:
-            database.update_video(video['id'], {'status': 'Failed', 'error_message': f"Node 3 JSON Parse Error: {e}"})
+            database.fail_video(video['id'], 'Node 3', 'SCRIPT_JSON_INVALID', str(e))
             continue
 
         downloaded_paths = []
@@ -368,15 +368,13 @@ def run():
                 'status': 'Pending_Render',
                 'error_message': None
             })
+            database.resolve_pipeline_errors(video['id'], 'Node 3')
             print(f"Updated video ID {video['id']} to Pending_Render with {len(downloaded_paths)} assets.")
 
         except Exception as e:
             error_str = str(e)
             print(f"Failed to fetch assets: {error_str}")
-            database.update_video(video['id'], {
-                'status': 'Failed',
-                'error_message': f"Node 3 (Assets) Error: {error_str}"
-            })
+            database.fail_video(video['id'], 'Node 3', 'ASSET_FETCH', error_str)
 
 if __name__ == "__main__":
     while True:

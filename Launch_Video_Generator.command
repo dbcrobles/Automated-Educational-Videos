@@ -10,7 +10,11 @@ fi
 
 # Kill any existing reflex servers or main.py processes to avoid port conflicts
 pkill -f "reflex run" || true
-pkill -f "python3 main.py" || true
+if [ -f "Backend/orchestrator.lock" ]; then
+    OLD_PID="$(cat Backend/orchestrator.lock)"
+    kill "$OLD_PID" 2>/dev/null || true
+fi
+sleep 1
 
 # Start the Backend Workers
 echo "Starting Backend Orchestrator..."
