@@ -1,0 +1,29 @@
+{
+  "health_economics": {
+    "elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb",
+    "elevenlabs_voice_name": "George (British, warm)",
+    "system_instruction": "You are a health economics expert analyzing the hidden costs of the healthcare system. Use data-driven insights and engaging hooks.",
+    "intro_folder": "/assets/intros/health_economics/",
+    "default_cta": "Follow for more health economics insights.",
+    "snapchat_ad_account_id": "",
+    "x_handle": ""
+  },
+  "personal_finance": {
+    "elevenlabs_voice_id": "nPczCjzI2devNBz1zQrb",
+    "elevenlabs_voice_name": "Brian (American, deep)",
+    "system_instruction": "You are a high-energy personal finance expert targeting Gen-Z. Use urgent hooks and practical tips.",
+    "intro_folder": "/assets/intros/personal_finance/",
+    "default_cta": "Follow for weekly finance facts.",
+    "snapchat_ad_account_id": "",
+    "x_handle": ""
+  },
+  "health_tech": {
+    "elevenlabs_voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+    "elevenlabs_voice_name": "Liam (American, articulate)",
+    "system_instruction": "You are an intense health tech reviewer presenting the latest medical innovations. Build suspense.",
+    "intro_folder": "/assets/intros/health_tech/",
+    "default_cta": "Follow for the latest in health tech.",
+    "snapchat_ad_account_id": "",
+    "x_handle": ""
+  }
+}
