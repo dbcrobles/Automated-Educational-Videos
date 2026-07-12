@@ -16,6 +16,7 @@ Backend/database/db.sqlite
 Backend/assets/*
 !Backend/assets/music/
 Backend/assets/music/**/*.mp3
+Backend/assets/sfx/
 !Backend/assets/intros/
 Backend/assets/intros/**/*.mp4
 
@@ -23,6 +24,7 @@ Backend/assets/intros/**/*.mp4
 Backend/remotion/node_modules/
 Backend/remotion/public/[0-9]*
 Backend/remotion/public/music
+Backend/remotion/public/sfx
 
 # Reflex frontend build artifacts
 Frontend/.web/

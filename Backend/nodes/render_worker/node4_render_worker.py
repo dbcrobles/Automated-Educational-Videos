@@ -7,6 +7,9 @@ import glob
 import random
 import shutil
 import subprocess
+import math
+import struct
+import wave
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import database
@@ -20,7 +23,7 @@ BACKEND_DIR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 ASSETS_DIR   = os.path.join(BACKEND_DIR, 'assets')
 REMOTION_DIR = os.path.join(BACKEND_DIR, 'remotion')
 
-GEMINI_MODEL_STRUCTURED = "gemini-2.5-flash"
+SCRIPT_MODEL = "gpt-5.6-luna / gemini-3.5-flash fallback"
 
 # transition_hint → (type, durationInFrames)
 TRANSITION_MAP = {
@@ -207,6 +210,33 @@ def pick_music(video_id, mood):
     return f"music/{rel}"
 
 
+def ensure_sfx_assets():
+    """Create a tiny built-in effects palette without another API or asset dependency."""
+    sfx_dir = os.path.join(ASSETS_DIR, 'sfx')
+    os.makedirs(sfx_dir, exist_ok=True)
+    sample_rate, length = 44100, 0.8
+    for name in ('impact', 'whoosh', 'chime'):
+        path = os.path.join(sfx_dir, f'{name}.wav')
+        if os.path.exists(path):
+            continue
+        rng = random.Random(name)
+        frames = []
+        for index in range(round(sample_rate * length)):
+            t = index / sample_rate
+            fade = max(0, 1 - t / length)
+            if name == 'impact':
+                value = (math.sin(2 * math.pi * (75 - 35 * t) * t) + rng.uniform(-0.35, 0.35)) * fade ** 4
+            elif name == 'whoosh':
+                swell = math.sin(math.pi * t / length) ** 2
+                value = rng.uniform(-1, 1) * swell * math.sin(2 * math.pi * (250 + 900 * t) * t)
+            else:
+                value = (math.sin(2 * math.pi * 880 * t) + 0.5 * math.sin(2 * math.pi * 1320 * t)) * fade ** 3
+            frames.append(struct.pack('<h', int(max(-1, min(1, value * 0.45)) * 32767)))
+        with wave.open(path, 'wb') as audio:
+            audio.setparams((1, 2, sample_rate, 0, 'NONE', 'not compressed'))
+            audio.writeframes(b''.join(frames))
+
+
 # ─── Preprocessing (FFmpeg normalisation for Remotion) ───────────────────────
 
 BASE_VF = (f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
@@ -264,8 +294,8 @@ def preprocess_intro(video):
         return None
     src = os.path.join(intro_dir, random.Random(video['id']).choice(intros))
     dst = os.path.join(ASSETS_DIR, str(video['id']), 'prepped_intro.mp4')
-    dur = probe_duration(src)
-    preprocess_clip(src, dst, dur + 0.1, keep_audio=True)
+    dur = min(3.0, probe_duration(src))
+    preprocess_clip(src, dst, dur, keep_audio=True)
     frames = round(probe_duration(dst) * FPS)
     print(f"Node 4: Intro prepped ({frames} frames): {os.path.basename(src)}")
     return {'src': f"{video['id']}/prepped_intro.mp4", 'durationInFrames': frames}
@@ -289,9 +319,10 @@ def build_props(video, clips, scenes, durations, words, mood):
             'durationInFrames': round(dur * FPS),
             'sceneIndex': i,
             'pacingStyle': scenes[i].get('pacing_style', 'standard') if i < len(scenes) else 'standard',
-            'cameraMovement': directives.get('camera_movement', 'gentle_push_in'),
+            'cameraMovement': directives.get('camera_movement', 'static'),
             'colorGradeHint': directives.get('color_grade_hint', 'high_contrast'),
             'audioEmphasis': directives.get('audio_emphasis', 'voiceonly'),
+            'soundEffect': directives.get('sound_effect', 'none'),
             'captionStyle': directives.get('caption_style', 'bottom_center'),
             'chart': scenes[i].get('chart') if i < len(scenes) else None,
             'mediaDisplayMode': media.get('display_mode'),
@@ -331,7 +362,7 @@ def build_props(video, clips, scenes, durations, words, mood):
         'scenes': scene_props,
         'voiceoverSrc': f"{vid}/voiceover.mp3",
         'captions': caption_props,
-        'music': ({'src': music_src, 'volumeDb': -18, 'fadeOutSec': 2}
+        'music': ({'src': music_src, 'volumeDb': -22, 'fadeOutSec': 2}
                   if music_src else None),
         'compliance': {'text': compliance_text,
                        'fullDuration': bool(video.get('is_sponsored'))},
@@ -344,12 +375,26 @@ def build_props(video, clips, scenes, durations, words, mood):
     return comp_json, total_frames
 
 
+def validate_edit_plan(script, durations):
+    """Final structural QA before Remotion consumes the storyboard."""
+    scenes = script.get('scenes', [])
+    if not scenes or not durations or durations[0] > 3.1:
+        raise Exception("First-three-second QA failed: opening scene exceeds 3.10s.")
+    evidence = (script.get('_research') or {}).get('evidence_ledger', [])
+    chart_expected = any(item.get('chart_recommended') and item.get('chart_unit')
+                         and 2 <= len(item.get('chart_points') or []) <= 6
+                         for item in evidence)
+    if chart_expected and not any(scene.get('chart') for scene in scenes):
+        raise Exception("Chart QA failed: comparable sourced metrics were not visualized.")
+
+
 def make_public_symlinks(video_id):
     public = os.path.join(REMOTION_DIR, 'public')
     os.makedirs(public, exist_ok=True)
     links = [
         (os.path.join(ASSETS_DIR, str(video_id)), os.path.join(public, str(video_id))),
         (os.path.join(ASSETS_DIR, 'music'), os.path.join(public, 'music')),
+        (os.path.join(ASSETS_DIR, 'sfx'), os.path.join(public, 'sfx')),
     ]
     for target, link in links:
         if os.path.islink(link) or os.path.exists(link):
@@ -361,7 +406,7 @@ def make_public_symlinks(video_id):
 
 def remove_public_symlinks(video_id):
     public = os.path.join(REMOTION_DIR, 'public')
-    for name in [str(video_id), 'music']:
+    for name in [str(video_id), 'music', 'sfx']:
         link = os.path.join(public, name)
         if os.path.islink(link):
             os.remove(link)
@@ -406,7 +451,7 @@ def render_ffmpeg_fallback(clips, durations, voiceover, out_path):
 
 def stamp_metadata(video, rendered_path, final_path):
     cmd = [FFMPEG, '-y', '-i', rendered_path,
-           '-metadata', f"comment=AI-Assisted | {GEMINI_MODEL_STRUCTURED}",
+           '-metadata', f"comment=AI-Assisted | {SCRIPT_MODEL}",
            '-metadata', f"copyright=© {video['account_id']}",
            '-c', 'copy', final_path]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -438,6 +483,7 @@ def render_video(video):
     mood = script.get('music_mood', 'neutral') or 'neutral'
 
     durations = load_scene_durations(video, len(clip_groups), scenes, audio_dur)
+    validate_edit_plan(script, durations)
     words = load_captions_words(video)
     clip_count = sum(len(group) for group in clip_groups)
     print(f"Node 4: video {vid}: {len(clip_groups)} scenes/{clip_count} clips, audio {audio_dur:.1f}s, "
@@ -461,6 +507,7 @@ def render_video(video):
                 preprocess_clip(clip, dst, needed, keep_audio=keep_audio)
 
         comp_json, total_frames = build_props(video, clip_groups, scenes, durations, words, mood)
+        ensure_sfx_assets()
         make_public_symlinks(vid)
         print(f"Node 4: Rendering {total_frames} frames via Remotion...")
         render_remotion(comp_json, rendered)
@@ -508,7 +555,7 @@ def run():
                 'status': next_status,
                 'compliance_metadata': json.dumps({
                     'ai_disclosure': 'AI-Assisted',
-                    'model': GEMINI_MODEL_STRUCTURED,
+                    'model': SCRIPT_MODEL,
                     'sponsored': bool(video.get('is_sponsored')),
                 }),
                 'error_message': None,

@@ -29,6 +29,7 @@ type SceneProps = {
   cameraMovement: string;
   colorGradeHint: string;
   audioEmphasis: string;
+  soundEffect: "none" | "impact" | "whoosh" | "chime";
   captionStyle: string;
   chart: ChartSpec | null;
   mediaDisplayMode: string | null;
@@ -115,6 +116,9 @@ const DirectedScene: React.FC<SceneProps & { containerDurationInFrames: number }
         );
       })}
       {scene.chart && <ChartOverlay chart={scene.chart} durationInFrames={scene.durationInFrames} />}
+      {scene.soundEffect !== "none" && (
+        <Audio src={staticFile(`sfx/${scene.soundEffect}.wav`)} volume={0.22} />
+      )}
       {scene.sourceCredit && (
         <div style={{ position: "absolute", left: 34, bottom: 34, zIndex: 2, padding: "10px 16px", borderRadius: 10, background: "rgba(0,0,0,0.72)", color: "white", fontFamily: "sans-serif", fontSize: 22 }}>
           Source: {scene.sourceCredit}
@@ -160,8 +164,8 @@ export const ShortVideo: React.FC<{
     });
     if (scene?.sourceAudio) return 0;
     const emphasisDb = scene?.audioEmphasis === "music_pedestal"
-      ? -13
-      : scene?.audioEmphasis === "sfx_drop" ? -36 : music.volumeDb;
+      ? -18
+      : scene?.audioEmphasis === "sfx_drop" ? -30 : music.volumeDb;
     const base = scene?.audioEmphasis === "voiceonly" ? 0 : Math.pow(10, emphasisDb / 20);
     const fadeStart = durationInFrames - music.fadeOutSec * fps;
     return f < fadeStart

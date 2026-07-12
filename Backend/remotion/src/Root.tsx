@@ -27,6 +27,7 @@ export const RemotionRoot: React.FC = () => {
             cameraMovement: z.string(),
             colorGradeHint: z.string(),
             audioEmphasis: z.string(),
+            soundEffect: z.enum(["none", "impact", "whoosh", "chime"]).default("none"),
             captionStyle: z.string(),
             chart: z
               .object({

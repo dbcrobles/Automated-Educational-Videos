@@ -25,6 +25,18 @@ POPULAR_VOICES = {
     "River (American, neutral)": "SAz9YHcvj6GT2YYXdXww"
 }
 VOICE_IDS_TO_NAMES = {v: k for k, v in POPULAR_VOICES.items()}
+ACCOUNTS_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'Backend', 'accounts_config.json')
+
+def _configured_account_ids():
+    try:
+        with open(ACCOUNTS_CONFIG_PATH, 'r') as f:
+            return list(json.load(f).keys())
+    except (OSError, json.JSONDecodeError):
+        return ["personal_finance", "health_economics", "health_tech"]
+
+ACCOUNT_IDS = _configured_account_ids()
 
 GEMINI_MODEL = "gemini-3.1-pro"
 
@@ -69,6 +81,7 @@ class VideoModel(BaseModel):
     final_path: str = ""
     voice_name: str = ""
     script_cost_estimate: float = 0.0
+    visual_qa_result: str = ""
     error_code: str = ""
     error_repeat_count: int = 0
     error_attempt: int = 0
@@ -110,7 +123,7 @@ class State(rx.State):
 
     # Account Settings
     settings_account: str = "personal_finance"
-    selected_voice_name: str = "Adam (American, deep)"
+    selected_voice_name: str = "Brian (American, deep)"
     default_cta_text: str = ""
     snapchat_ad_account_id: str = ""
     x_handle: str = ""
@@ -249,6 +262,7 @@ class State(rx.State):
                 final_path=row.get('final_path') or "",
                 voice_name=row.get('voice_name') or "",
                 script_cost_estimate=row.get('script_cost_estimate') or 0.0,
+                visual_qa_result=row.get('visual_qa_result') or "",
                 error_code=incidents.get(row['id'], {}).get('error_code', ''),
                 error_repeat_count=incidents.get(row['id'], {}).get('occurrence_count', 0),
                 error_attempt=incidents.get(row['id'], {}).get('attempt', 0),
@@ -396,9 +410,13 @@ class State(rx.State):
     def reject_to_script(self, video_id: int):
         """Revise the storyboard while preserving the expensive research checkpoint."""
         note = str(self.rejection_notes.get(video_id, "")).strip()
+        conn = database.get_connection()
+        row = conn.execute("SELECT script FROM videos WHERE id = ?", (video_id,)).fetchone()
+        conn.close()
         updates = {
             'status': 'Pending_Script', 'error_message': None,
-            'storyboard_draft': None, 'script_retry_count': 0,
+            'storyboard_draft': row[0] if row and row[0] else None,
+            'script_retry_count': 0,
         }
         if note:
             updates['qa_feedback'] = note
@@ -423,6 +441,17 @@ class State(rx.State):
         if note:
             updates['qa_feedback'] = note
         database.update_video(video_id, updates)
+        self.rejection_notes = {k: v for k, v in self.rejection_notes.items() if k != video_id}
+        self.load_videos()
+
+    def reject_to_assets(self, video_id: int):
+        """Replace stock visuals while preserving approved script, voice, and research."""
+        note = str(self.rejection_notes.get(video_id, "")).strip()
+        feedback = f"[VISUAL_REPLACEMENT] {note or 'Replace the rejected visual choices.'}"
+        database.update_video(video_id, {
+            'status': 'Pending_Assets', 'qa_feedback': feedback,
+            'error_message': None, 'visual_qa_result': None,
+        })
         self.rejection_notes = {k: v for k, v in self.rejection_notes.items() if k != video_id}
         self.load_videos()
 
@@ -487,12 +516,11 @@ class State(rx.State):
 
     # Account Settings Methods
     def load_settings(self):
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Backend', 'accounts_config.json')
-        with open(config_path, 'r') as f:
+        with open(ACCOUNTS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         acc = config.get(self.settings_account, {})
-        voice_id = acc.get('elevenlabs_voice_id', 'pNInz6obbfdqGghh13')
-        self.selected_voice_name = VOICE_IDS_TO_NAMES.get(voice_id, "Adam (American, deep)")
+        voice_id = acc.get('elevenlabs_voice_id', POPULAR_VOICES["Brian (American, deep)"])
+        self.selected_voice_name = VOICE_IDS_TO_NAMES.get(voice_id, "Brian (American, deep)")
         self.default_cta_text = acc.get('default_cta', "")
         self.snapchat_ad_account_id = acc.get('snapchat_ad_account_id', "")
         self.x_handle = acc.get('x_handle', "")
@@ -521,16 +549,18 @@ class State(rx.State):
         self._save_settings()
 
     def _save_settings(self):
-        voice_id = POPULAR_VOICES.get(self.selected_voice_name, "pNInz6obbfdqGghh13")
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Backend', 'accounts_config.json')
-        with open(config_path, 'r') as f:
+        voice_id = POPULAR_VOICES.get(self.selected_voice_name, POPULAR_VOICES["Brian (American, deep)"])
+        with open(ACCOUNTS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         if self.settings_account in config:
             config[self.settings_account]['elevenlabs_voice_id'] = voice_id
+            config[self.settings_account]['elevenlabs_voice_name'] = self.selected_voice_name
+            config[self.settings_account]['voice_mode'] = 'fixed'
+            config[self.settings_account].pop('voice_profiles', None)
             config[self.settings_account]['default_cta'] = self.default_cta_text
             config[self.settings_account]['snapchat_ad_account_id'] = self.snapchat_ad_account_id
             config[self.settings_account]['x_handle'] = self.x_handle
-        with open(config_path, 'w') as f:
+        with open(ACCOUNTS_CONFIG_PATH, 'w') as f:
             json.dump(config, f, indent=2)
 
 
@@ -604,7 +634,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                             video.hook_score > 0,
                             rx.badge(
                                 f"🎣 Hook: {video.hook_score}/10",
-                                color_scheme=rx.cond(video.hook_score >= 7, "green", rx.cond(video.hook_score >= 5, "amber", "red")),
+                                color_scheme=rx.cond(video.hook_score >= 7.5, "green", rx.cond(video.hook_score >= 5, "amber", "red")),
                                 radius="full", size="1"
                             )
                         ),
@@ -827,6 +857,20 @@ def render_video_card(video: VideoModel) -> rx.Component:
                             max_height="400px",
                         ),
                     ),
+                    rx.callout(
+                        "Final QA: confirm the first 3 seconds hook immediately, the voice matches the account, "
+                        "effects feel justified, visuals match the narration, and cited comparisons appear as a chart.",
+                        icon="info", color_scheme="blue", size="1", width="100%",
+                    ),
+                    rx.cond(
+                        video.visual_qa_result != "",
+                        rx.box(
+                            rx.text("Automated visual review", size="2", weight="bold"),
+                            rx.code(video.visual_qa_result, size="1"),
+                            width="100%", padding="3", border_radius="8px",
+                            background="var(--gray-2)",
+                        ),
+                    ),
                     rx.cond(
                         video.script_sources_list.length() > 0,
                         rx.vstack(
@@ -860,7 +904,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                                     color_scheme="red",
                                     variant="soft",
                                     size="2",
-                                    title="Full rewrite — sends back to Node 1. Uses Gemini + ElevenLabs.",
+                                    title="Revises with GPT-5.6 Luna when configured, then regenerates downstream stages.",
                                     on_click=lambda: State.reject_to_script(video.id),
                                 ),
                                 rx.button(
@@ -870,6 +914,14 @@ def render_video_card(video: VideoModel) -> rx.Component:
                                     size="2",
                                     title="Re-records voiceover only — skips scripting. Uses ElevenLabs.",
                                     on_click=lambda: State.reject_to_voiceover(video.id),
+                                ),
+                                rx.button(
+                                    "↩ Replace Visuals",
+                                    color_scheme="purple",
+                                    variant="soft",
+                                    size="2",
+                                    title="Keeps the approved script and voice, excludes prior stock sources, then fetches and reviews new visuals.",
+                                    on_click=lambda: State.reject_to_assets(video.id),
                                 ),
                                 rx.button(
                                     "↩ Re-render Only",
@@ -1002,7 +1054,7 @@ def pipeline_tab() -> rx.Component:
                         size="3",
                     ),
                     rx.select(
-                        ["personal_finance", "history_medicine", "medical_cases", "nature_facts"],
+                        ACCOUNT_IDS,
                         placeholder="Category",
                         on_change=State.set_new_category,
                         value=State.new_category,
@@ -1164,7 +1216,7 @@ def intros_tab() -> rx.Component:
             rx.hstack(
                 rx.text("Account Category:", size="2", weight="medium"),
                 rx.select(
-                    ["personal_finance", "history_medicine", "medical_cases", "nature_facts"],
+                    ACCOUNT_IDS,
                     on_change=State.update_upload_account,
                     value=State.upload_account,
                     size="2",
@@ -1176,7 +1228,7 @@ def intros_tab() -> rx.Component:
                 rx.vstack(
                     rx.text("🎥", font_size="32px"),
                     rx.text("Drop .mp4 files here or click to browse", size="2", weight="medium"),
-                    rx.text("9:16 vertical, up to 30s recommended", size="1", color="gray"),
+                    rx.text("9:16 vertical, 2–3s hook clip (longer uploads are trimmed)", size="1", color="gray"),
                     align="center",
                     spacing="1",
                     padding="6",
@@ -1248,7 +1300,7 @@ def settings_tab() -> rx.Component:
                 rx.vstack(
                     section_label("Account"),
                     rx.select(
-                        ["personal_finance", "history_medicine", "medical_cases", "nature_facts"],
+                        ACCOUNT_IDS,
                         on_change=State.update_settings_account,
                         value=State.settings_account,
                         size="3",

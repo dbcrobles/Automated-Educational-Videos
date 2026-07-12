@@ -38,6 +38,7 @@ def migrate():
         ("research_dossier", "TEXT"),
         ("storyboard_draft", "TEXT"),
         ("script_cost_estimate", "REAL DEFAULT 0"),
+        ("visual_qa_result", "TEXT"),
     ]
     for col, defn in migrations:
         try:
@@ -185,7 +186,7 @@ def asset_path(video_id, filename):
         'captions.json': f'captions_{video_id}.json',
         'final.mp4': f'final_{video_id}.mp4',
     }
-    legacy_name = legacy_map.get(filename, filename)
+    legacy_name = legacy_map.get(filename) or filename
     legacy_path = os.path.join(ASSETS_DIR, legacy_name)
     if os.path.exists(legacy_path):
         return legacy_path

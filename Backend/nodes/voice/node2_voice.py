@@ -46,16 +46,16 @@ def select_voice(video_id, script_json_str, account_settings):
     """
     import random
 
+    if account_settings.get('voice_mode') == 'fixed':
+        vid = account_settings.get('elevenlabs_voice_id', DEFAULT_VOICE_ID)
+        name = account_settings.get('elevenlabs_voice_name', vid)
+        return vid, name
+
     account_voices = account_settings.get('voice_profiles') or []
     if account_voices:
         choice = random.Random(video_id).choice(account_voices)
         print(f"Node 2: account voice allowlist → '{choice['name']}'")
         return choice['id'], choice['name']
-
-    if account_settings.get('voice_mode') == 'fixed':
-        vid = account_settings.get('elevenlabs_voice_id', DEFAULT_VOICE_ID)
-        name = account_settings.get('elevenlabs_voice_name', vid)
-        return vid, name
 
     mood = 'neutral'
     try:
@@ -236,7 +236,13 @@ def generate_voiceover(video_id, script_json_str, voice_id):
     }
     payload = {
         "text": full_text,
-        "model_id": "eleven_multilingual_v2"
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.25,
+            "use_speaker_boost": True
+        }
     }
 
     response = requests.post(url, json=payload, headers=headers, timeout=60)
@@ -269,6 +275,12 @@ def generate_voiceover(video_id, script_json_str, voice_id):
     else:
         os.replace(raw_audio_path, audio_path)
         timing = _build_scene_timing(words, scene_word_counts)
+
+    if scenes and scenes[0].get('hook') and timing:
+        hook_duration = timing[0]['end'] - timing[0]['start']
+        if hook_duration > 3.1:
+            raise Exception(
+                f"Aligned spoken hook is {hook_duration:.2f}s; first-three-second QA allows 3.10s.")
 
     with open(timing_path, 'w') as f:
         json.dump(timing, f, indent=2)

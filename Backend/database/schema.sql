@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS videos (
     voice_name TEXT,
     research_dossier TEXT,
     storyboard_draft TEXT,
-    script_cost_estimate REAL DEFAULT 0
+    script_cost_estimate REAL DEFAULT 0,
+    visual_qa_result TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_errors (

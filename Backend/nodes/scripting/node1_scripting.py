@@ -23,6 +23,9 @@ MAX_SCRIPT_COST_PER_VIDEO = 0.25
 
 GEMINI_MODEL_RESEARCH = "gemini-3.1-pro-preview"
 GEMINI_MODEL_STRUCTURED = "gemini-3.5-flash"
+OPENAI_MODEL_SCRIPT = "gpt-5.6-luna"
+OPENAI_INPUT_USD_PER_TOKEN = 1.00 / 1_000_000
+OPENAI_OUTPUT_USD_PER_TOKEN = 6.00 / 1_000_000
 
 VALID_PACING = {"rapid", "standard", "slow_pan"}
 VALID_TRANSITIONS = {"whip_pan", "zoom_punch", "crossfade", "dissolve", "dip_to_black"}
@@ -47,6 +50,7 @@ class EditingDirectives(BaseModel):
     camera_movement: Literal["static", "gentle_push_in", "slow_zoom_out", "shake"]
     color_grade_hint: Literal["warm", "clinical_cool", "desaturated", "high_contrast"]
     audio_emphasis: Literal["voiceonly", "music_pedestal", "sfx_drop"]
+    sound_effect: Literal["none", "impact", "whoosh", "chime"]
     caption_style: Literal["bottom_center", "top_left", "keyword_emerge", "full_text"]
 
 class AnchorArticle(BaseModel):
@@ -55,8 +59,29 @@ class AnchorArticle(BaseModel):
     source_type: str
     selection_reason: str
 
+class SourceCandidate(BaseModel):
+    candidate_id: str
+    title: str
+    url: str
+    source_type: str
+    publisher: str
+    publication_date: str
+    central_finding: str
+    distinct_value: str
+
+class SourceScout(BaseModel):
+    candidates: list[SourceCandidate]
+
+class AnchorChoice(BaseModel):
+    candidate_id: str
+    selection_reason: str
+
 class AnchorSelection(BaseModel):
-    anchors: list[AnchorArticle]
+    choices: list[AnchorChoice]
+
+class ChartPoint(BaseModel):
+    label: str
+    value: float
 
 class EvidenceClaim(BaseModel):
     claim: str
@@ -67,6 +92,8 @@ class EvidenceClaim(BaseModel):
     numeric_value: Optional[float] = None
     unit: Optional[str] = None
     chart_recommended: bool
+    chart_unit: Optional[str] = None
+    chart_points: list[ChartPoint] = Field(default_factory=list)
 
 class ResearchDossier(BaseModel):
     thesis: str
@@ -74,10 +101,6 @@ class ResearchDossier(BaseModel):
     evidence_ledger: list[EvidenceClaim]
     related_sources: list[str]
     tensions_or_unknowns: list[str]
-
-class ChartPoint(BaseModel):
-    label: str
-    value: float
 
 class ChartSpec(BaseModel):
     chart_type: Literal["pie", "bar", "line"]
@@ -172,18 +195,22 @@ def _retrieval_statuses(response, requested_urls):
         for index, url in enumerate(requested_urls)
     }
 
-def _validated_anchors(selection, candidate_urls, excluded_urls=()):
-    """Keep curator choices tied to the scout's real URLs and optional exclusion list."""
-    candidates = {_url_key(url): url for url in candidate_urls}
-    excluded = {_url_key(url) for url in excluded_urls}
-    validated = []
-    for anchor in selection:
-        key = _url_key(anchor.get('url'))
-        if key in candidates and key not in excluded:
-            anchor = dict(anchor)
-            anchor['url'] = candidates[key]
-            validated.append(anchor)
-    return validated[:2]
+def _anchors_from_choices(choices, candidates, excluded_ids=()):
+    """Resolve curator IDs in code so the model never has to reproduce a URL."""
+    by_id = {candidate['candidate_id']: candidate for candidate in candidates}
+    excluded = set(excluded_ids)
+    anchors = []
+    for choice in choices:
+        candidate = by_id.get(choice.get('candidate_id'))
+        if not candidate or candidate['candidate_id'] in excluded:
+            continue
+        anchors.append({
+            'title': candidate['title'],
+            'url': candidate['url'],
+            'source_type': candidate['source_type'],
+            'selection_reason': choice.get('selection_reason') or candidate['distinct_value'],
+        })
+    return anchors[:2]
 
 def _resolve_doi_anchors(anchors):
     """Replace DOI resolver links with their public article destinations when available."""
@@ -266,7 +293,11 @@ def _deep_research(client, topic, anchor_urls, research_profile):
     Use URL context to read every anchor. Then find 2-4 related sources that corroborate, update,
     challenge, or humanize the anchor findings. Build 6-10 atomic evidence claims. Every claim must
     include its exact source URL, population/geography, date/period, caveat, and numeric value/unit
-    when applicable. Mark a number chart-worthy only when the denominator, unit, and context are clear.
+     when applicable. Mark a number chart-worthy only when the denominator, unit, and context are clear.
+     For every chart-worthy comparison or time series, fill `chart_points` with 2-6 exact, non-negative,
+     consistently-unitized values stated by that source and put their shared unit in `chart_unit`. `unit`
+     describes `numeric_value` and may differ from `chart_unit` (for example, a 51 percent headline whose
+     chart points are PHP amounts). Otherwise set `chart_recommended` false, `chart_unit` null, and use [].
     Surface disagreements and unknowns. Do not infer a number that no retrieved source states.
     Preserve the supplied anchors exactly in `anchors`.
     """
@@ -294,25 +325,34 @@ def _build_research_dossier(client, topic, research_profile, video_id):
     """
     print(f"Node 1: Pass 1 (Source scout) for '{topic}'...")
     scout_response = client.models.generate_content(
-        model=GEMINI_MODEL_RESEARCH,
+        model=GEMINI_MODEL_STRUCTURED,
         contents=scout_prompt,
-        config=types.GenerateContentConfig(temperature=0.3, tools=[{"google_search": {}}]),
+        config=types.GenerateContentConfig(
+            temperature=0.3,
+            tools=[{"google_search": {}}],
+            response_mime_type="application/json",
+            response_schema=SourceScout,
+        ),
     )
     database.add_script_cost(video_id, COST_SCOUT_CALL)
     scout_text = scout_response.text or ''
-    scout_urls = _urls_from_text(scout_text) | set(_grounding_urls(scout_response))
-    if len(scout_urls) < 2:
+    candidates = json.loads(scout_text or '{}').get('candidates', [])
+    candidates = [candidate for candidate in candidates
+                  if str(candidate.get('url', '')).startswith(('http://', 'https://'))]
+    for index, candidate in enumerate(candidates, 1):
+        candidate['candidate_id'] = f"C{index:02d}"
+    if len(candidates) < 2:
         raise Exception("Source scout found fewer than two verifiable article URLs.")
 
     curate_prompt = f"""
-    Select 1-2 anchor articles for a video about "{topic}" from ONLY the candidates below.
+    Select 1-2 anchor candidate IDs for a video about "{topic}" from ONLY the candidates below.
     Choose the smallest set that can carry the story. Prefer one empirical/official source and,
     when useful, one rigorous explanatory or investigative article. Judge authority, recency,
     direct relevance, accessible evidence, complementary viewpoint, and narrative usefulness.
-    Never alter or invent a URL.
+    Return candidate IDs, not URLs.
 
     CANDIDATES:
-    {scout_text}
+    {json.dumps(candidates, indent=2)}
     """
     print("Node 1: Pass 2 (Anchor curation)...")
     curate_response = client.models.generate_content(
@@ -325,11 +365,11 @@ def _build_research_dossier(client, topic, research_profile, video_id):
         ),
     )
     database.add_script_cost(video_id, COST_CURATE_CALL)
-    anchor_selection = json.loads(curate_response.text or '{}').get('anchors', [])[:2]
-    anchors = _validated_anchors(anchor_selection, scout_urls)
+    anchor_choices = json.loads(curate_response.text or '{}').get('choices', [])[:2]
+    anchors = _anchors_from_choices(anchor_choices, candidates)
     if not anchors:
-        raise Exception("Anchor curator did not return a URL verified by the source scout.")
-    selected_scout_urls = [anchor['url'] for anchor in anchors]
+        raise Exception("Anchor curator did not return a candidate ID from the source scout.")
+    selected_ids = [choice['candidate_id'] for choice in anchor_choices]
     anchors = _resolve_doi_anchors(anchors)
     anchor_urls = [anchor['url'] for anchor in anchors]
 
@@ -349,10 +389,14 @@ def _build_research_dossier(client, topic, research_profile, video_id):
         if usable:
             anchors = [anchor for anchor in anchors if anchor['url'] in usable]
         else:
+            failed_keys = {_url_key(url) for url in failed}
+            failed_ids = [candidate['candidate_id'] for candidate in candidates
+                          if _url_key(candidate['url']) in failed_keys]
             retry_prompt = curate_prompt + f"""
 
-            URL Context could not retrieve these choices: {json.dumps(list(failed))}
-            Exclude them and select 1-2 different, publicly accessible candidates.
+            URL Context could not retrieve candidate IDs {json.dumps(failed_ids)}.
+            Exclude those and previously selected IDs {json.dumps(selected_ids)}.
+            Select 1-2 different, publicly accessible candidates.
             """
             retry_response = client.models.generate_content(
                 model=GEMINI_MODEL_STRUCTURED,
@@ -364,9 +408,9 @@ def _build_research_dossier(client, topic, research_profile, video_id):
                 ),
             )
             database.add_script_cost(video_id, COST_CURATE_CALL)
-            retry_selection = json.loads(retry_response.text or '{}').get('anchors', [])
-            anchors = _validated_anchors(
-                retry_selection, scout_urls, set(failed) | set(selected_scout_urls))
+            retry_choices = json.loads(retry_response.text or '{}').get('choices', [])
+            anchors = _anchors_from_choices(
+                retry_choices, candidates, set(failed_ids) | set(selected_ids))
             if not anchors:
                 raise Exception(f"No retrievable anchor alternative remained. URL Context statuses: {failed}")
             anchors = _resolve_doi_anchors(anchors)
@@ -382,8 +426,61 @@ def _build_research_dossier(client, topic, research_profile, video_id):
             raise Exception(f"URL Context could not retrieve the recovered anchors: {failed}")
     dossier = json.loads(research_text)
     dossier['anchors'] = anchors
-    verified_urls = set(anchor_urls) | _urls_from_text(research_text) | set(_grounding_urls(deep_response))
+    verified_urls = ({candidate['url'] for candidate in candidates} | set(anchor_urls)
+                     | _urls_from_text(research_text) | set(_grounding_urls(deep_response)))
     return dossier, verified_urls
+
+def _openai_storyboard(prompt, persona, video_id):
+    """Generate the creative draft with Luna while keeping research in Gemini."""
+    schema = ScriptOutput.model_json_schema()
+    stack = [schema]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            node.pop('default', None)
+            if node.get('type') == 'object' and 'properties' in node:
+                node['additionalProperties'] = False
+                node['required'] = list(node['properties'])
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    response = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": OPENAI_MODEL_SCRIPT,
+            "input": [
+                {"role": "system", "content": f"Role & Objective: {persona}"},
+                {"role": "user", "content": prompt},
+            ],
+            "reasoning": {"effort": os.environ.get("OPENAI_REASONING_EFFORT", "max")},
+            "text": {"format": {
+                "type": "json_schema",
+                "name": "video_storyboard",
+                "schema": schema,
+                "strict": True,
+            }},
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    result_text = payload.get('output_text')
+    if not result_text:
+        result_text = next(
+            (content.get('text') for item in payload.get('output', [])
+             for content in item.get('content', [])
+             if content.get('type') == 'output_text'), None)
+    if not result_text:
+        raise Exception("GPT-5.6 Luna returned no storyboard text.")
+    usage = payload.get('usage', {})
+    cost = (usage.get('input_tokens', 0) * OPENAI_INPUT_USD_PER_TOKEN
+            + usage.get('output_tokens', 0) * OPENAI_OUTPUT_USD_PER_TOKEN)
+    database.add_script_cost(video_id, cost or COST_SCRIPT_CALL)
+    return result_text
 
 def generate_script(topic, account_id, video_id, qa_feedback=None, cta_text=None,
                     cached_research=None, previous_draft=None):
@@ -449,20 +546,23 @@ def generate_script(topic, account_id, video_id, qa_feedback=None, cta_text=None
     Formatting Rules & Pipeline Constraints:
     1. Narration: Write exactly what the voice should speak. Use natural contractions, varied sentence length,
        clean pronunciation, and no stage directions. A scene's words must fit its assigned duration.
-    2. Intentional Duration: Assign `duration_seconds` from 2-12 seconds per scene. The scene durations MUST
+    2. Intentional Duration: Assign `duration_seconds` from 2-12 seconds per scene. Scene 1 is a special
+       2-3 second hook beat with no more than 8 spoken words. Its first word starts the hook immediately—no
+       greeting, topic label, throat-clearing, or delayed setup. The scene durations MUST
        total 65-100 seconds. Use 2-3.5s scenes for punchy facts or pattern interrupts, 4-7s for explanation,
        and 8-12s sparingly for the central mechanism, emotional turn, or climax. Include at least one short
        scene and one 7s+ scene; do not make every scene nearly equal.
     3. Scene Visual Types: Stock remains the fallback for every scene. `visual_search_queries` is an
        ordered list of 1-3 literal searches. A scene may also use one chart, one licensed-media excerpt,
        or both when they genuinely clarify the narration.
-    4. Stock Video Queries: `visual_search_queries` entries must each be 2-5 concrete words.
+    4. Stock Video Queries: `visual_search_queries` entries must each be 2-5 concrete words. Scene 1's primary
+       query must show the hook's concrete consequence or action—not a generic establishing shot.
        Each query must be 2-5 concrete words describing a filmable subject in motion, such as
        "nurse walking hospital" or "hands counting cash". Never include labels, slashes, camera instructions,
        abstractions, brand names, or prose. Query 1 is the ideal visual; queries 2-3 are progressively broader,
        visually related fallbacks and may become cutaways. Give at least two queries to selected 5s+ scenes.
-       Search behavior is cache → portrait Pexels → Pixabay; only after all stock queries fail does the pipeline
-       generate one 9:16 Veo clip. If that also fails, the video fails, so broad fallbacks must remain relevant.
+       Search behavior is cache → portrait/broad stock video → stock still → Veo. Broad fallbacks must remain
+       relevant rather than merely producing any available footage.
     5. Licensed Media: You may select `licensed_media` ONLY by an exact `media_id` in the supplied catalog.
        Never put a web URL there. Use `source_audio` only when the catalog permits original audio; that scene's
        `narration` MUST be an empty string and its duration must fit the approved window. Otherwise use
@@ -470,50 +570,67 @@ def generate_script(topic, account_id, video_id, qa_feedback=None, cta_text=None
     6. Charts: Use `chart` only for useful numbers explicitly present in the evidence ledger. Copy values
        exactly; include the exact evidence URL and a short source label. Use pie only for true parts of a whole
        whose values total approximately 100. Use bars for category comparison and lines for ordered change
-       over time. Use 2-6 non-negative data points and no more than two charts in the video. Do not place a
-       chart over a source-audio excerpt.
+       over time. Use 2-6 non-negative data points and no more than two charts in the video. If the dossier has
+       a chart-recommended claim with 2+ `chart_points`, the storyboard MUST visualize at least one such set.
+       Also use a chart when narrating two or more comparable metrics from the same source and unit. Do not
+       place a chart over a source-audio excerpt or use a decorative chart for an isolated number.
     7. Dynamic Pacing: For every scene, assign a `pacing_style`:
        - 'rapid': Use for high-tension montages, chaotic moments, or rapid-fire facts.
        - 'standard': Use for normal explanatory dialogue.
        - 'slow_pan': Use sparingly for dramatic breathing room, profound statements, or establishing shots.
-    8. Transition Hints: Use only the renderer's exact transitions:
-       - rapid → 'whip_pan' or 'zoom_punch' (4 frames)
-       - standard → 'crossfade' (8 frames)
-       - slow_pan → 'dissolve' or 'dip_to_black' (14 frames)
-       No more than 2 consecutive scenes with the same pacing_style; use deliberate contrast patterns (rapid-rapid-slow_pan = tension/release).
+    8. Transition Hints: Prefer `crossfade` or `dissolve`. Use `whip_pan`, `zoom_punch`, or `dip_to_black`
+       only when a specific narrative turn justifies it, never merely for variety. No more than two stylized
+       transitions in the whole video.
     9. Editing Directives: Every scene needs `editing_directives` with exactly one allowed value per field:
        - camera_movement: 'static', 'gentle_push_in', 'slow_zoom_out', or 'shake'
        - color_grade_hint: 'warm', 'clinical_cool', 'desaturated', or 'high_contrast'
        - audio_emphasis: 'voiceonly', 'music_pedestal', or 'sfx_drop'
+       - sound_effect: 'none', 'impact', 'whoosh', or 'chime'
        - caption_style: 'bottom_center', 'top_left', 'keyword_emerge', or 'full_text'
-       Match these choices to meaning. Use shake and sfx_drop only as rare emphasis, not defaults.
+       Restraint is the default: use static or gentle movement, voice-led audio, and `sound_effect='none'`.
+       Use at most two non-consecutive sound effects in the entire video, and only when the sound has a clear
+       semantic purpose. Never add an effect just to satisfy variety. Never use `shake` for ordinary exposition.
+       Every scene with a sound effect uses sfx_drop; other scenes normally use sound_effect='none'.
     10. Music Mood: Choose one whole-video mood: 'tense', 'uplifting', 'mysterious', or 'neutral'.
     11. Word-Count Gate: Spoken narrator words must total 160-260 and fit the duration plan. Empty
         source-audio scenes do not count. Report the true count.
     12. CTA Injection: The final narration MUST end with this exact text: "{cta_text or 'Follow for more'}"
     13. Hook: Scene 1 MUST include `hook` with `hook_type` (question, statistic, controversy, or promise)
         and `hook_text` exactly matching the opening spoken words. Later scenes should omit the hook.
-    14. Self-QA: Score `hook_score` from 0-10 and estimate `retention_estimate` as a percentage.
-        Be harsh: a generic hook is 4. Do not use suspense that the evidence cannot repay.
+    14. Hook & Retention QA: Score `hook_score` from 0-10 and estimate `retention_estimate` as a percentage.
+        Be harsh: a generic hook is 4. Passing requires 7.5+. The first 3 seconds need an immediate
+        evidence-backed spoken hook, a matching concrete visual, and readable emphasis captions. An audio
+        pattern interrupt is optional, not required. Every later scene must advance, explain, contrast, or resolve it.
     15. Use only claims supported by the dossier. Put only exact dossier URLs in `sources`.
 
     Output strictly as a JSON object matching the requested schema.
     """
 
     print(f"Node 1: Pass 4 (Structured storyboard) for '{topic}'...")
-    script_response = client.models.generate_content(
-        model=GEMINI_MODEL_STRUCTURED,
-        contents=script_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=f"Role & Objective: {persona}",
-            response_mime_type="application/json",
-            response_schema=ScriptOutput,
-            temperature=0.7
-        ),
-    )
-    database.add_script_cost(video_id, COST_SCRIPT_CALL)
-
-    result_text = script_response.text
+    result_text = None
+    if os.environ.get('OPENAI_API_KEY'):
+        try:
+            print(f"Node 1: Writing with {OPENAI_MODEL_SCRIPT} (reasoning=max).")
+            result_text = _openai_storyboard(script_prompt, persona, video_id)
+        except Exception as error:
+            database.record_pipeline_error(
+                video_id, 'Node 1', 'LUNA_FALLBACK', str(error), auto_recovered=True)
+            print(f"Node 1: Luna unavailable ({error}); using {GEMINI_MODEL_STRUCTURED}.")
+    if not result_text:
+        if not os.environ.get('OPENAI_API_KEY'):
+            print(f"Node 1: OPENAI_API_KEY absent; using {GEMINI_MODEL_STRUCTURED}.")
+        script_response = client.models.generate_content(
+            model=GEMINI_MODEL_STRUCTURED,
+            contents=script_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=f"Role & Objective: {persona}",
+                response_mime_type="application/json",
+                response_schema=ScriptOutput,
+                temperature=0.7
+            ),
+        )
+        database.add_script_cost(video_id, COST_SCRIPT_CALL)
+        result_text = script_response.text
     if not result_text:
         raise Exception("Pass 4 returned an empty storyboard response.")
 
@@ -526,11 +643,19 @@ def _coerce_enums(output):
     """Coerce invalid enum values to defaults — don't fail the video over one bad value."""
     if output.get('music_mood') not in VALID_MOODS:
         output['music_mood'] = 'neutral'
-    for scene in output.get('scenes', []):
+    stylized_transitions = 0
+    shake_scenes = 0
+    effect_scenes = 0
+    previous_effect_index = -2
+    for index, scene in enumerate(output.get('scenes', [])):
         if scene.get('pacing_style') not in VALID_PACING:
             scene['pacing_style'] = 'standard'
         if scene.get('transition_hint') not in VALID_TRANSITIONS:
             scene['transition_hint'] = 'crossfade'
+        if scene['transition_hint'] in {'whip_pan', 'zoom_punch', 'dip_to_black'}:
+            stylized_transitions += 1
+            if stylized_transitions > 2:
+                scene['transition_hint'] = 'crossfade'
         queries = scene.get('visual_search_queries')
         if not isinstance(queries, list):
             queries = [scene.get('visual_search_query', '')]
@@ -543,18 +668,90 @@ def _coerce_enums(output):
             scene['duration_seconds'] = 4.0
         directives = scene.get('editing_directives') or {}
         if directives.get('camera_movement') not in VALID_CAMERA_MOVEMENTS:
-            directives['camera_movement'] = 'gentle_push_in'
+            directives['camera_movement'] = 'static'
+        if directives['camera_movement'] == 'shake':
+            shake_scenes += 1
+            if shake_scenes > 1:
+                directives['camera_movement'] = 'static'
         if directives.get('color_grade_hint') not in VALID_COLOR_GRADES:
             directives['color_grade_hint'] = 'high_contrast'
         if directives.get('audio_emphasis') not in VALID_AUDIO_EMPHASIS:
             directives['audio_emphasis'] = 'voiceonly'
+        if directives.get('sound_effect') not in {'none', 'impact', 'whoosh', 'chime'}:
+            directives['sound_effect'] = 'none'
+        if directives['sound_effect'] != 'none':
+            if effect_scenes >= 2 or index == previous_effect_index + 1:
+                directives.update(sound_effect='none', audio_emphasis='voiceonly')
+            else:
+                effect_scenes += 1
+                previous_effect_index = index
+                directives['audio_emphasis'] = 'sfx_drop'
         if directives.get('caption_style') not in VALID_CAPTION_STYLES:
             directives['caption_style'] = 'bottom_center'
         scene['editing_directives'] = directives
     return output
 
+def _chart_point_is_sourced(point, chart, evidence):
+    """Accept exact atomic values or exact values from a researched chart set."""
+    for item in evidence:
+        if item.get('source_url') != chart.get('source_url'):
+            continue
+        point_unit = item.get('chart_unit') or item.get('unit')
+        if point_unit and point_unit != chart.get('unit'):
+            continue
+        values = [item.get('numeric_value')]
+        values.extend(p.get('value') for p in item.get('chart_points') or [])
+        if any(isinstance(value, (int, float))
+               and math.isclose(point['value'], value, rel_tol=1e-6, abs_tol=1e-6)
+               for value in values):
+            return True
+    return False
+
+def _chartable_evidence(evidence):
+    """Return only complete, exact chart sets; isolated numbers do not force charts."""
+    return [item for item in evidence
+            if item.get('chart_recommended')
+            and item.get('chart_unit')
+            and 2 <= len(item.get('chart_points') or []) <= 6
+            and all(isinstance(point.get('value'), (int, float))
+                    and math.isfinite(point['value']) and point['value'] >= 0
+                    for point in item.get('chart_points') or [])]
+
+def _inject_required_chart(output):
+    """Build one truthful chart from researched points when the model omits it."""
+    scenes = output.get('scenes', [])
+    if not scenes or any(scene.get('chart') for scene in scenes):
+        return output
+    chart_sets = _chartable_evidence(output.get('_research', {}).get('evidence_ledger', []))
+    if not chart_sets:
+        return output
+    item = chart_sets[0]
+    claim = str(item.get('claim') or 'Sourced comparison')
+    keywords = {word.lower() for word in re.findall(r'[A-Za-z]{4,}', claim)}
+    eligible = [(index, scene) for index, scene in enumerate(scenes[1:], 1)
+                if (scene.get('licensed_media') or {}).get('playback_mode') != 'source_audio']
+    if not eligible:
+        return output
+    index, scene = max(eligible, key=lambda pair: (
+        len(keywords & {word.lower() for word in re.findall(r'[A-Za-z]{4,}', pair[1].get('narration', ''))}),
+        pair[1].get('duration_seconds', 0)))
+    labels = [str(point.get('label', '')) for point in item['chart_points']]
+    chart_type = 'line' if labels and all(re.search(r'\b(?:19|20)\d{2}\b', label) for label in labels) else 'bar'
+    scene['chart'] = {
+        'chart_type': chart_type,
+        'display_mode': 'full_screen',
+        'title': claim.split('.')[0][:72],
+        'unit': item['chart_unit'],
+        'points': item['chart_points'],
+        'highlight': claim[:110],
+        'source_url': item['source_url'],
+        'source_label': urlsplit(item['source_url']).netloc.removeprefix('www.')[:45],
+    }
+    return output
+
 def _apply_safe_fallbacks(output, expected_cta):
     """Repair deterministic formatting problems without another model call."""
+    output = _inject_required_chart(output)
     scenes = output.get('scenes', [])
     evidence = output.get('_research', {}).get('evidence_ledger', [])
     evidence_urls = {item.get('source_url') for item in evidence}
@@ -584,13 +781,9 @@ def _apply_safe_fallbacks(output, expected_cta):
             valid_values = 2 <= len(points) <= 6 and all(
                 isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
                 for value in values)
-            claims_match = valid_values and chart.get('source_url') in evidence_urls and all(
-                any(item.get('source_url') == chart.get('source_url')
-                    and item.get('numeric_value') is not None
-                    and math.isclose(point['value'], item['numeric_value'], rel_tol=1e-6, abs_tol=1e-6)
-                    and (not item.get('unit') or item.get('unit') == chart.get('unit'))
-                    for item in evidence)
-                for point in points)
+            claims_match = (valid_values and chart.get('source_url') in evidence_urls
+                            and all(_chart_point_is_sourced(point, chart, evidence)
+                                    for point in points))
             valid_pie = chart.get('chart_type') != 'pie' or (
                 valid_values and math.isclose(sum(values), 100, abs_tol=1))
             if (not claims_match or not valid_pie
@@ -651,16 +844,28 @@ def _quality_issues(output, expected_cta):
         issues.append("first scene has no hook")
     elif not scenes[0].get('narration', '').startswith(scenes[0]['hook'].get('hook_text', '')):
         issues.append("hook_text does not exactly match the opening narration")
+    if scenes:
+        first = scenes[0]
+        first_directives = first.get('editing_directives') or {}
+        if first.get('duration_seconds', 99) > 3:
+            issues.append("first scene must end within the first 3 seconds")
+        if len(first.get('narration', '').split()) > 8:
+            issues.append("first scene hook must contain no more than 8 spoken words")
+        if first_directives.get('caption_style') not in {'keyword_emerge', 'full_text'}:
+            issues.append("first scene needs emphasis captions")
     if scenes and not scenes[-1].get('narration', '').rstrip().endswith(expected_cta):
         issues.append("final narration does not end with exact CTA")
-    if output.get('hook_score', 0) < 6:
-        issues.append(f"hook_score={output.get('hook_score', 0)} (need >=6)")
+    if output.get('hook_score', 0) < 7.5:
+        issues.append(f"hook_score={output.get('hook_score', 0)} (need >=7.5)")
     if not any(str(s).startswith(('http://', 'https://')) for s in output.get('sources', [])):
         issues.append("sources contains no exact URL")
 
     catalog = {entry.get('id'): entry for entry in _load_approved_media_catalog()}
     evidence = output.get('_research', {}).get('evidence_ledger', [])
     evidence_urls = {item.get('source_url') for item in evidence}
+    chart_expected = bool(_chartable_evidence(evidence))
+    if chart_expected and not any(scene.get('chart') for scene in scenes):
+        issues.append("chart-worthy/comparable sourced metrics require at least one chart")
     if sum(bool(scene.get('chart')) for scene in scenes) > 2:
         issues.append("video may contain no more than two charts")
     for i, scene in enumerate(scenes):
@@ -692,22 +897,8 @@ def _quality_issues(output, expected_cta):
                 continue
             if chart.get('source_url') not in evidence_urls:
                 issues.append(f"scene {i + 1} chart source is not in the evidence ledger")
-            sourced_values = [
-                item.get('numeric_value') for item in evidence
-                if item.get('source_url') == chart.get('source_url')
-                and item.get('numeric_value') is not None
-            ]
-            if not all(
-                    any(item.get('source_url') == chart.get('source_url')
-                        and item.get('numeric_value') is not None
-                        and math.isclose(point['value'], item['numeric_value'], rel_tol=1e-6, abs_tol=1e-6)
-                        and (not item.get('unit') or item.get('unit') == chart.get('unit'))
-                        for item in evidence)
-                    for point in points):
+            if not all(_chart_point_is_sourced(point, chart, evidence) for point in points):
                 issues.append(f"scene {i + 1} chart value or unit does not match its source claims")
-            if any(not any(math.isclose(v, source, rel_tol=1e-6, abs_tol=1e-6)
-                           for source in sourced_values) for v in values):
-                issues.append(f"scene {i + 1} chart contains a value absent from its source claims")
             if chart.get('chart_type') == 'pie':
                 if any(v < 0 for v in values) or not math.isclose(sum(values), 100, abs_tol=1):
                     issues.append(f"scene {i + 1} pie values must total about 100")
