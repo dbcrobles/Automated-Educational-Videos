@@ -29,3 +29,5 @@ Frontend/.web/
 Frontend/reflex.lock/
 Frontend/uploaded_files/
 Frontend/assets/preview_*.mp4
+# Stray/legacy local DBs
+Backend/database/*.db
