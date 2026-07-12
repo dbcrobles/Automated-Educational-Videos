@@ -5,6 +5,7 @@ import time
 import random
 import re
 import math
+import requests
 from typing import Literal, Optional
 from urllib.parse import parse_qsl, urlsplit
 from pydantic import BaseModel, Field
@@ -183,6 +184,32 @@ def _validated_anchors(selection, candidate_urls, excluded_urls=()):
             validated.append(anchor)
     return validated[:2]
 
+def _resolve_doi_anchors(anchors):
+    """Replace DOI resolver links with their public article destinations when available."""
+    resolved = []
+    for anchor in anchors:
+        anchor = dict(anchor)
+        if urlsplit(anchor['url']).netloc.lower().removeprefix('www.') == 'doi.org':
+            try:
+                response = requests.get(anchor['url'], allow_redirects=True, stream=True, timeout=8)
+                if response.ok and urlsplit(response.url).netloc.lower() != 'doi.org':
+                    anchor['url'] = response.url
+                response.close()
+            except requests.RequestException as error:
+                print(f"Node 1: DOI resolution skipped for {anchor['url']}: {error}")
+        resolved.append(anchor)
+    return resolved
+
+def _retrieval_failures(statuses, research_text):
+    """Reject explicit failures; missing optional metadata is inconclusive, not fatal."""
+    dossier_urls = {_url_key(url) for url in _urls_from_text(research_text)}
+    explicit_failures = ('ERROR', 'PAYWALL', 'UNSAFE')
+    return {
+        url: status for url, status in statuses.items()
+        if status.endswith(explicit_failures)
+        or (status == 'NOT_REPORTED' and _url_key(url) not in dossier_urls)
+    }
+
 def _load_approved_media_catalog():
     """Return rights-cleared local media entries; absent catalog means stock/charts only."""
     catalog_path = os.path.join(ASSETS_DIR, 'source_media', 'catalog.json')
@@ -316,6 +343,8 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
     anchors = _validated_anchors(anchor_selection, scout_urls)
     if not anchors:
         raise Exception("Anchor curator did not return a URL verified by the source scout.")
+    selected_scout_urls = [anchor['url'] for anchor in anchors]
+    anchors = _resolve_doi_anchors(anchors)
     anchor_urls = [anchor['url'] for anchor in anchors]
 
     # PASS 3: Read the anchors directly, then search outward for corroboration and challenge.
@@ -324,12 +353,12 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
     if not research_text:
         raise Exception("Anchor deep dive returned no research dossier.")
     statuses = _retrieval_statuses(deep_response, anchor_urls)
-    failed = {url: status for url, status in statuses.items() if not status.endswith('SUCCESS')}
+    failed = _retrieval_failures(statuses, research_text)
     if failed:
         print(f"Node 1: URL Context recovery needed: {failed}")
-        successful = {url for url, status in statuses.items() if status.endswith('SUCCESS')}
-        if successful:
-            anchors = [anchor for anchor in anchors if anchor['url'] in successful]
+        usable = set(anchor_urls) - set(failed)
+        if usable:
+            anchors = [anchor for anchor in anchors if anchor['url'] in usable]
         else:
             retry_prompt = curate_prompt + f"""
 
@@ -346,16 +375,18 @@ def generate_script(topic, account_id, qa_feedback=None, cta_text=None):
                 ),
             )
             retry_selection = json.loads(retry_response.text or '{}').get('anchors', [])
-            anchors = _validated_anchors(retry_selection, scout_urls, failed)
+            anchors = _validated_anchors(
+                retry_selection, scout_urls, set(failed) | set(selected_scout_urls))
             if not anchors:
                 raise Exception(f"No retrievable anchor alternative remained. URL Context statuses: {failed}")
+            anchors = _resolve_doi_anchors(anchors)
         anchor_urls = [anchor['url'] for anchor in anchors]
         deep_response = _deep_research(client, topic, anchor_urls, research_profile)
         research_text = deep_response.text
         if not research_text:
             raise Exception("Recovered anchor deep dive returned no research dossier.")
         statuses = _retrieval_statuses(deep_response, anchor_urls)
-        failed = {url: status for url, status in statuses.items() if not status.endswith('SUCCESS')}
+        failed = _retrieval_failures(statuses, research_text)
         if failed:
             raise Exception(f"URL Context could not retrieve the recovered anchors: {failed}")
     dossier = json.loads(research_text)
