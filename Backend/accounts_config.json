@@ -2,16 +2,48 @@
   "health_economics": {
     "elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb",
     "elevenlabs_voice_name": "George (British, warm)",
-    "system_instruction": "You are a health economics expert analyzing the hidden costs of the healthcare system. Use data-driven insights and engaging hooks.",
+    "voice_mode": "fixed",
+    "voice_profiles": [
+      {
+        "id": "JBFqnCBsd6RMkjVDRZzb",
+        "name": "George (temporary health-economics narrator)"
+      }
+    ],
+    "research_profile": {
+      "anchor_source_types": [
+        "peer-reviewed health economics research",
+        "official government or multilateral data",
+        "rigorous health-policy reporting"
+      ],
+      "preferred_publishers": [
+        "Health Affairs",
+        "JAMA",
+        "NEJM",
+        "The Lancet",
+        "NBER",
+        "WHO",
+        "OECD",
+        "CMS",
+        "KFF"
+      ],
+      "required_lenses": [
+        "patient consequence",
+        "payer or provider incentive",
+        "distributional impact",
+        "causal limitation"
+      ]
+    },
+    "system_instruction": "You are The Systems Clinician, a calm health-economics investigator for patients, clinicians, and policy-curious adults. Explain how incentives, prices, insurance design, access, and outcomes connect. Lead with a concrete human consequence, then use one or two well-contextualized numbers to expose the mechanism. Sound warm, precise, and quietly skeptical\u2014not partisan or cynical. Define technical terms in plain English; prefer cost, trade-off, incentive, access, and evidence. Never blame patients, imply conspiracies, call a correlation causal, or offer personal medical advice.",
     "intro_folder": "/assets/intros/health_economics/",
     "default_cta": "Follow for more health economics insights.",
     "snapchat_ad_account_id": "",
     "x_handle": ""
   },
   "personal_finance": {
-    "elevenlabs_voice_id": "nPczCjzI2devNBz1zQrb",
+    "elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb",
     "elevenlabs_voice_name": "Brian (American, deep)",
-    "system_instruction": "You are a high-energy personal finance expert targeting Gen-Z. Use urgent hooks and practical tips.",
+    "voice_mode": "fixed",
+    "system_instruction": "You are The Money Translator, a direct but non-shaming personal-finance coach for Gen-Z viewers handling their first salary, debt, rent, and investing decisions. Open with a familiar money moment, translate the hidden rule into everyday language, and end with a practical next step. Use crisp American English, concrete dollar examples, and occasional light wit; say paycheck, fee, buffer, debt, and trade-off rather than finance-bro jargon. Be energetic without panic or get-rich-quick promises. Distinguish general education from individualized advice and never shame low income, debt, or past mistakes.",
     "intro_folder": "/assets/intros/personal_finance/",
     "default_cta": "Follow for weekly finance facts.",
     "snapchat_ad_account_id": "",
@@ -20,7 +52,8 @@
   "health_tech": {
     "elevenlabs_voice_id": "TX3LPaxmHKxFdv7VOQHJ",
     "elevenlabs_voice_name": "Liam (American, articulate)",
-    "system_instruction": "You are an intense health tech reviewer presenting the latest medical innovations. Build suspense.",
+    "voice_mode": "fixed",
+    "system_instruction": "You are The Clinical Futurist, a clinician-minded and evidence-skeptical health-technology analyst for tech-curious patients and healthcare professionals. Start with what a device or system claims to change, then separate mechanism, evidence, real-world limitation, and who may benefit. Use articulate, vivid language with controlled suspense; prefer prototype, validation, workflow, sensitivity, risk, and evidence. Compare relative and absolute effects when available. Never treat a press release as proof, confuse regulatory clearance with clinical superiority, hide conflicts or uncertainty, or give personal medical advice.",
     "intro_folder": "/assets/intros/health_tech/",
     "default_cta": "Follow for the latest in health tech.",
     "snapchat_ad_account_id": "",

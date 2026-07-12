@@ -91,19 +91,29 @@ def srt_to_words(srt_path):
 
 # ─── Input resolution ─────────────────────────────────────────────────────────
 
-def _scene_index(path):
-    m = re.search(r'scene_(\d+)\.mp4$', path)
-    return int(m.group(1)) if m else 0
+def _scene_clip_key(path):
+    m = re.search(r'scene_(\d+)(?:_clip_(\d+))?\.mp4$', path)
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+
+
+def _group_scene_clips(paths):
+    """Group scene_N.mp4 and scene_N_clip_M.mp4 while preserving legacy lists."""
+    groups = {}
+    for path in paths:
+        key = _scene_clip_key(path)
+        if key is None:
+            return [[p] for p in paths]
+        groups.setdefault(key[0], []).append((key[1], path))
+    return [[path for _, path in sorted(groups[index])]
+            for index in sorted(groups)]
 
 
 def find_scene_clips(video):
-    """Locate the per-scene source clips. Canonical: assets/{id}/scene_N.mp4."""
+    """Locate and group one or more source clips for each scripted scene."""
     vid = video['id']
-    clips = sorted(
-        glob.glob(os.path.join(ASSETS_DIR, str(vid), 'scene_*.mp4')),
-        key=_scene_index)
+    clips = glob.glob(os.path.join(ASSETS_DIR, str(vid), 'scene_*.mp4'))
     if clips:
-        return clips
+        return _group_scene_clips(clips)
 
     # Fallback 1: DB video_path holds a JSON array (pre-fix behaviour)
     try:
@@ -111,15 +121,13 @@ def find_scene_clips(video):
         if isinstance(paths, list):
             paths = [p for p in paths if os.path.exists(p)]
             if paths:
-                return paths
+                return _group_scene_clips(paths)
     except Exception:
         pass
 
     # Fallback 2: legacy flat layout video_{id}_scene_N.mp4
-    clips = sorted(
-        glob.glob(os.path.join(ASSETS_DIR, f'video_{vid}_scene_*.mp4')),
-        key=_scene_index)
-    return clips
+    clips = glob.glob(os.path.join(ASSETS_DIR, f'video_{vid}_scene_*.mp4'))
+    return _group_scene_clips(clips)
 
 
 def load_scene_durations(video, num_clips, scenes, audio_dur):
@@ -223,6 +231,27 @@ def preprocess_clip(src, dst, needed_sec, keep_audio=False):
         raise Exception(f"Preprocess failed for {os.path.basename(src)}:\n{tail}")
 
 
+def clip_has_audio(path):
+    result = subprocess.run(
+        [FFPROBE, '-v', 'error', '-select_streams', 'a:0',
+         '-show_entries', 'stream=index', '-of', 'csv=p=0', path],
+        capture_output=True, text=True)
+    return bool(result.stdout.strip())
+
+
+def source_media_metadata():
+    catalog_path = os.path.join(ASSETS_DIR, 'source_media', 'catalog.json')
+    if not os.path.exists(catalog_path):
+        return {}
+    try:
+        with open(catalog_path) as f:
+            data = json.load(f)
+        entries = data.get('media', []) if isinstance(data, dict) else data
+        return {entry.get('id'): entry for entry in entries}
+    except Exception:
+        return {}
+
+
 def preprocess_intro(video):
     """Returns (rel_src, durationInFrames) or None."""
     if not video.get('use_human_intro'):
@@ -246,15 +275,28 @@ def preprocess_intro(video):
 
 def build_props(video, clips, scenes, durations, words, mood):
     vid = video['id']
+    media_catalog = source_media_metadata()
     scene_props = []
     for i, dur in enumerate(durations):
         hint = scenes[i].get('transition_hint', 'crossfade') if i < len(scenes) else 'crossfade'
         ttype, tframes = TRANSITION_MAP.get(hint, TRANSITION_MAP['crossfade'])
+        directives = scenes[i].get('editing_directives', {}) if i < len(scenes) else {}
+        media = scenes[i].get('licensed_media') or {} if i < len(scenes) else {}
+        media_entry = media_catalog.get(media.get('media_id'), {})
         scene_props.append({
-            'src': f"{vid}/prepped_scene_{i}.mp4",
+            'clips': [f"{vid}/prepped_scene_{i}_clip_{j}.mp4"
+                      for j in range(len(clips[i]))],
             'durationInFrames': round(dur * FPS),
             'sceneIndex': i,
             'pacingStyle': scenes[i].get('pacing_style', 'standard') if i < len(scenes) else 'standard',
+            'cameraMovement': directives.get('camera_movement', 'gentle_push_in'),
+            'colorGradeHint': directives.get('color_grade_hint', 'high_contrast'),
+            'audioEmphasis': directives.get('audio_emphasis', 'voiceonly'),
+            'captionStyle': directives.get('caption_style', 'bottom_center'),
+            'chart': scenes[i].get('chart') if i < len(scenes) else None,
+            'mediaDisplayMode': media.get('display_mode'),
+            'sourceAudio': media.get('playback_mode') == 'source_audio',
+            'sourceCredit': media_entry.get('credit_text'),
             'transitionAfter': None if i == len(durations) - 1
                                else {'type': ttype, 'durationInFrames': tframes},
         })
@@ -266,15 +308,29 @@ def build_props(video, clips, scenes, durations, words, mood):
     music_src = pick_music(vid, mood)
     compliance_text = "#ad | AI-Assisted" if video.get('is_sponsored') else "AI-Assisted"
 
+    caption_props = []
+    scene_ends = []
+    cursor = 0
+    for scene in scene_props:
+        cursor += scene['durationInFrames']
+        scene_ends.append(cursor)
+    for word in words:
+        start_frame = round(word['start'] * FPS)
+        scene_index = next((i for i, end in enumerate(scene_ends) if start_frame < end),
+                           max(0, len(scene_props) - 1))
+        style = scene_props[scene_index]['captionStyle'] if scene_props else 'bottom_center'
+        caption_props.append({'word': word['word'],
+                              'startFrame': start_frame,
+                              'endFrame': round(word['end'] * FPS),
+                              'style': style})
+
     props = {
         'fps': FPS, 'width': WIDTH, 'height': HEIGHT,
         'durationInFrames': total_frames,
         'intro': intro,
         'scenes': scene_props,
         'voiceoverSrc': f"{vid}/voiceover.mp3",
-        'captions': [{'word': w['word'],
-                      'startFrame': round(w['start'] * FPS),
-                      'endFrame': round(w['end'] * FPS)} for w in words],
+        'captions': caption_props,
         'music': ({'src': music_src, 'volumeDb': -18, 'fadeOutSec': 2}
                   if music_src else None),
         'compliance': {'text': compliance_text,
@@ -370,8 +426,8 @@ def render_video(video):
     voiceover = resolve_voiceover(video)
     audio_dur = probe_duration(voiceover)
 
-    clips = find_scene_clips(video)
-    if not clips:
+    clip_groups = find_scene_clips(video)
+    if not clip_groups:
         raise Exception("No scene clips found on disk. Re-run asset fetch (Pending_Assets).")
 
     try:
@@ -381,9 +437,10 @@ def render_video(video):
     scenes = script.get('scenes', [])
     mood = script.get('music_mood', 'neutral') or 'neutral'
 
-    durations = load_scene_durations(video, len(clips), scenes, audio_dur)
+    durations = load_scene_durations(video, len(clip_groups), scenes, audio_dur)
     words = load_captions_words(video)
-    print(f"Node 4: video {vid}: {len(clips)} clips, audio {audio_dur:.1f}s, "
+    clip_count = sum(len(group) for group in clip_groups)
+    print(f"Node 4: video {vid}: {len(clip_groups)} scenes/{clip_count} clips, audio {audio_dur:.1f}s, "
           f"scene durations {[f'{d:.1f}' for d in durations]}, {len(words)} caption words")
 
     final_path = os.path.join(vid_dir, 'final.mp4')
@@ -391,19 +448,32 @@ def render_video(video):
 
     try:
         # Preprocess scene clips for Remotion
-        for i, (clip, dur) in enumerate(zip(clips, durations)):
+        for i, (scene_clips, dur) in enumerate(zip(clip_groups, durations)):
             hint = scenes[i].get('transition_hint', 'crossfade') if i < len(scenes) else 'crossfade'
             _, tframes = TRANSITION_MAP.get(hint, TRANSITION_MAP['crossfade'])
-            needed = dur + tframes / FPS + 0.2
-            preprocess_clip(clip, os.path.join(vid_dir, f'prepped_scene_{i}.mp4'), needed)
+            media = scenes[i].get('licensed_media') or {} if i < len(scenes) else {}
+            source_audio = media.get('playback_mode') == 'source_audio'
+            needed = (dur + tframes / FPS + 0.2 if source_audio
+                      else dur / len(scene_clips) + tframes / FPS + 0.5)
+            for j, clip in enumerate(scene_clips):
+                dst = os.path.join(vid_dir, f'prepped_scene_{i}_clip_{j}.mp4')
+                keep_audio = source_audio and clip_has_audio(clip)
+                preprocess_clip(clip, dst, needed, keep_audio=keep_audio)
 
-        comp_json, total_frames = build_props(video, clips, scenes, durations, words, mood)
+        comp_json, total_frames = build_props(video, clip_groups, scenes, durations, words, mood)
         make_public_symlinks(vid)
         print(f"Node 4: Rendering {total_frames} frames via Remotion...")
         render_remotion(comp_json, rendered)
     except Exception as e:
+        rich_edit = any(
+            scene.get('chart')
+            or (scene.get('licensed_media') or {}).get('playback_mode') == 'source_audio'
+            for scene in scenes
+        )
+        if rich_edit:
+            raise Exception(f"Remotion required for chart/source-audio scene: {e}")
         print(f"Node 4: Remotion path failed ({e})\nNode 4: Falling back to plain FFmpeg render.")
-        render_ffmpeg_fallback(clips, durations, voiceover, rendered)
+        render_ffmpeg_fallback([group[0] for group in clip_groups], durations, voiceover, rendered)
     finally:
         remove_public_symlinks(vid)
 

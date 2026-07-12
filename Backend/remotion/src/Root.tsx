@@ -20,10 +20,29 @@ export const RemotionRoot: React.FC = () => {
           .nullable(),
         scenes: z.array(
           z.object({
-            src: z.string(),
+            clips: z.array(z.string()),
             durationInFrames: z.number(),
             sceneIndex: z.number(),
             pacingStyle: z.string(),
+            cameraMovement: z.string(),
+            colorGradeHint: z.string(),
+            audioEmphasis: z.string(),
+            captionStyle: z.string(),
+            chart: z
+              .object({
+                chart_type: z.enum(["pie", "bar", "line"]),
+                display_mode: z.enum(["overlay", "full_screen"]),
+                title: z.string(),
+                unit: z.string(),
+                points: z.array(z.object({ label: z.string(), value: z.number() })),
+                highlight: z.string(),
+                source_url: z.string(),
+                source_label: z.string(),
+              })
+              .nullable(),
+            mediaDisplayMode: z.string().nullable(),
+            sourceAudio: z.boolean(),
+            sourceCredit: z.string().nullable(),
             transitionAfter: z
               .object({
                 type: z.string(),
@@ -38,6 +57,7 @@ export const RemotionRoot: React.FC = () => {
             word: z.string(),
             startFrame: z.number(),
             endFrame: z.number(),
+            style: z.string(),
           })
         ),
         music: z

@@ -7,15 +7,22 @@ import {
   useVideoConfig,
 } from "remotion";
 
-type Word = { word: string; startFrame: number; endFrame: number };
+type Word = { word: string; startFrame: number; endFrame: number; style: string };
 
-// New page every 4 words OR when a word ends a sentence.
+// Compact styles show 4 words; full_text can hold a complete short sentence.
 const groupIntoPages = (words: Word[]): Word[][] => {
   const pages: Word[][] = [];
   let current: Word[] = [];
   for (const w of words) {
     current.push(w);
-    if (current.length >= 4 || /[.!?]$/.test(w.word)) {
+    const styleChanges = current.length > 1 && current[current.length - 2].style !== w.style;
+    if (styleChanges) {
+      const changed = current.pop() as Word;
+      pages.push(current);
+      current = [changed];
+    }
+    const pageLimit = w.style === "full_text" ? 12 : 4;
+    if (current.length >= pageLimit || /[.!?]$/.test(w.word)) {
       pages.push(current);
       current = [];
     }
@@ -56,28 +63,41 @@ export const Captions: React.FC<{
     durationInFrames: 5,
   });
   const pageScale = 0.8 + 0.2 * entrance;
+  const captionStyle = page[0].style || "bottom_center";
+  const topLeft = captionStyle === "top_left";
+  const fullText = captionStyle === "full_text";
+  const keywordEmerge = captionStyle === "keyword_emerge";
 
   return (
     <AbsoluteFill
       style={{
-        justifyContent: "flex-end",
-        alignItems: "center",
+        justifyContent: topLeft ? "flex-start" : "flex-end",
+        alignItems: topLeft ? "flex-start" : "center",
       }}
     >
       <style>{`@font-face { font-family: 'Montserrat'; src: url('${fontUrl}') format('truetype'); font-weight: 700; }`}</style>
       <div
         style={{
-          marginBottom: "22%",
-          background: "rgba(0,0,0,0.55)",
+          marginTop: topLeft ? "16%" : undefined,
+          marginLeft: topLeft ? "7%" : undefined,
+          marginBottom: topLeft ? undefined : "22%",
+          background: keywordEmerge ? "transparent" : "rgba(0,0,0,0.55)",
           borderRadius: 24,
           padding: "12px 28px",
-          maxWidth: "88%",
-          textAlign: "center",
+          maxWidth: topLeft ? "72%" : "88%",
+          textAlign: topLeft ? "left" : "center",
           transform: `scale(${pageScale})`,
+          transformOrigin: topLeft ? "top left" : "center",
         }}
       >
         {page.map((w, i) => {
           const active = frame >= w.startFrame && frame <= w.endFrame;
+          const wordEntrance = spring({
+            frame: frame - w.startFrame,
+            fps,
+            config: { damping: 160 },
+            durationInFrames: 6,
+          });
           return (
             <span
               key={i}
@@ -85,11 +105,14 @@ export const Captions: React.FC<{
                 display: "inline-block",
                 fontFamily: "Montserrat, sans-serif",
                 fontWeight: 700,
-                fontSize: 58,
+                fontSize: fullText ? 50 : keywordEmerge ? 66 : 58,
                 lineHeight: 1.25,
                 margin: "0 8px",
-                color: active ? accentColor : "white",
-                transform: active ? "scale(1.08)" : "scale(1)",
+                color: !fullText && active ? accentColor : "white",
+                opacity: keywordEmerge ? wordEntrance : 1,
+                transform: keywordEmerge
+                  ? `translateY(${(1 - wordEntrance) * 18}px) scale(${0.85 + wordEntrance * 0.15})`
+                  : active && !fullText ? "scale(1.08)" : "scale(1)",
                 textShadow: "0 2px 8px rgba(0,0,0,0.6)",
               }}
             >

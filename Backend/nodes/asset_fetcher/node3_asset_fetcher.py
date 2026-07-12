@@ -6,6 +6,7 @@ import hashlib
 import requests
 import re
 import subprocess
+import glob
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import database
@@ -15,6 +16,8 @@ PIXABAY_API_KEY = os.environ.get('PIXABAY_API_KEY')
 
 COST_VEO_GENERATION = 0.40
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'assets')
+FFMPEG = '/opt/homebrew/bin/ffmpeg'
+APPROVED_RIGHTS = {'owned', 'licensed', 'permission', 'public_domain'}
 
 def clean_query(query):
     q = re.sub(r'[\[\]]', '', query)
@@ -185,6 +188,91 @@ def _load_timing(video_id):
             pass
     return None
 
+def _scene_queries(scene):
+    """Return ordered primary/fallback searches, with old scripts supported."""
+    queries = scene.get('visual_search_queries')
+    if not isinstance(queries, list):
+        queries = [scene.get('visual_search_query', '')]
+    cleaned = []
+    for query in queries:
+        query = clean_query(str(query))
+        if query and query.lower() not in {q.lower() for q in cleaned}:
+            cleaned.append(query)
+    return cleaned[:3] or ["people walking city"]
+
+def _approved_media_by_id():
+    catalog_path = os.path.join(ASSETS_DIR, 'source_media', 'catalog.json')
+    if not os.path.exists(catalog_path):
+        return {}
+    with open(catalog_path) as f:
+        data = json.load(f)
+    entries = data.get('media', []) if isinstance(data, dict) else data
+    source_dir = os.path.realpath(os.path.dirname(catalog_path))
+    approved = {}
+    for entry in entries:
+        path = os.path.realpath(os.path.join(source_dir, str(entry.get('filename', ''))))
+        valid_window = entry.get('approved_end_seconds', 0) > entry.get('approved_start_seconds', 0)
+        platforms = entry.get('allowed_platforms', [])
+        required_metadata = all(entry.get(key) for key in (
+            'id', 'source_name', 'creator', 'source_url', 'credit_text'))
+        if (entry.get('rights_status') in APPROVED_RIGHTS and valid_window
+                and path.startswith(source_dir + os.sep) and os.path.isfile(path)
+                and 'all' in platforms and required_metadata):
+            approved[entry.get('id')] = {**entry, '_path': path}
+    return approved
+
+def _prepare_licensed_media(entry, destination_path, duration, keep_audio):
+    """Extract only the catalog-approved interval from a rights-cleared local file."""
+    approved_duration = entry['approved_end_seconds'] - entry['approved_start_seconds']
+    if duration > approved_duration + 0.05:
+        raise Exception(f"Requested {duration:.1f}s exceeds approved window for {entry.get('id')}")
+    command = [
+        FFMPEG, '-y', '-ss', str(entry['approved_start_seconds']), '-i', entry['_path'],
+        '-t', f'{duration:.3f}', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+    ]
+    command += ['-c:a', 'aac'] if keep_audio else ['-an']
+    command.append(destination_path)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0 or not validate_clip(destination_path, entry.get('id', 'licensed media')):
+        raise Exception(f"Could not prepare licensed media {entry.get('id')}")
+
+def _try_stock_query(keyword, destination_path, min_duration, used_sources):
+    """Try cache, then Pexels, then Pixabay for one query."""
+    cp = cache_path(keyword)
+    cache_key = f"cache:{hashlib.sha1(keyword.lower().strip().encode()).hexdigest()[:16]}"
+    if os.path.exists(cp) and cache_key not in used_sources:
+        import shutil
+        shutil.copy(cp, destination_path)
+        if validate_clip(destination_path, keyword):
+            used_sources.add(cache_key)
+            print(f"Node 3: Cache hit for '{keyword}'")
+            return True
+        os.remove(cp)
+
+    providers = (("Pexels", fetch_from_pexels), ("Pixabay", fetch_from_pixabay))
+    for provider_name, fetcher in providers:
+        try:
+            for source_id, url in fetcher(keyword, min_duration):
+                unique_id = f"{provider_name}:{source_id}"
+                if unique_id in used_sources:
+                    continue
+                try:
+                    download_asset(url, destination_path)
+                    if validate_clip(destination_path, keyword):
+                        used_sources.update({unique_id, cache_key})
+                        import shutil
+                        shutil.copy(destination_path, cp)
+                        print(f"Node 3: Fetched from {provider_name} for '{keyword}' (id={source_id})")
+                        return True
+                except Exception as e:
+                    print(f"Node 3: {provider_name} candidate {source_id} failed: {e}")
+                if os.path.exists(destination_path):
+                    os.remove(destination_path)
+        except Exception as e:
+            print(f"Node 3: {provider_name} failed for '{keyword}': {e}")
+    return False
+
 def run():
     print("Node 3: Asset Fetching worker started.")
     videos = database.fetch_videos_by_status('Pending_Assets')
@@ -202,101 +290,66 @@ def run():
         downloaded_paths = []
         video_assets_dir = os.path.join(ASSETS_DIR, str(video['id']))
         os.makedirs(video_assets_dir, exist_ok=True)
+        for old_clip in glob.glob(os.path.join(video_assets_dir, 'scene_*.mp4')):
+            os.remove(old_clip)
         veo_generation_count = 0
         used_sources = set()
+        approved_media = _approved_media_by_id()
 
         timing = _load_timing(video['id'])
 
         try:
             for idx, scene in enumerate(scenes):
-                raw_query = scene.get('visual_search_query', '')
-                keyword = clean_query(raw_query)
-                if not keyword:
-                    keyword = "abstract background"
+                queries = _scene_queries(scene)
 
-                min_duration = 2
+                scene_duration = 2
                 if timing and idx < len(timing):
-                    min_duration = timing[idx]['end'] - timing[idx]['start'] + 0.5
+                    scene_duration = timing[idx]['end'] - timing[idx]['start']
                 else:
-                    pacing = scene.get('pacing_style', 'standard')
-                    min_duration = {'rapid': 2, 'standard': 4, 'slow_pan': 8}.get(pacing, 4)
-
-                print(f"Fetching scene {idx+1}: {keyword} (min_dur={min_duration:.1f}s)")
-                dest_path = os.path.join(video_assets_dir, f"scene_{idx}.mp4")
-
-                cp = cache_path(keyword)
-                cache_key = hashlib.sha1(keyword.lower().strip().encode()).hexdigest()[:16]
-                scene_success = False
-
-                if os.path.exists(cp) and cache_key not in used_sources:
-                    import shutil
-                    shutil.copy(cp, dest_path)
-                    if validate_clip(dest_path, keyword):
-                        scene_success = True
-                        used_sources.add(cache_key)
-                        print(f"Node 3: Cache hit for '{keyword}'")
-
-                if not scene_success:
                     try:
-                        candidates = fetch_from_pexels(keyword, min_duration)
-                        for sid, url in candidates:
-                            if sid in used_sources:
-                                continue
-                            try:
-                                download_asset(url, dest_path)
-                                if validate_clip(dest_path, keyword):
-                                    scene_success = True
-                                    used_sources.add(sid)
-                                    import shutil
-                                    shutil.copy(dest_path, cp)
-                                    print(f"Node 3: Fetched from Pexels for '{keyword}' (id={sid})")
-                                    break
-                                else:
-                                    if os.path.exists(dest_path):
-                                        os.remove(dest_path)
-                            except Exception as e:
-                                print(f"Node 3: Pexels candidate {sid} failed: {e}")
-                                if os.path.exists(dest_path):
-                                    os.remove(dest_path)
-                    except Exception as e:
-                        print(f"Node 3: Pexels failed for {keyword}: {e}")
+                        scene_duration = float(scene.get('duration_seconds', 0)) or 2
+                    except (TypeError, ValueError):
+                        pacing = scene.get('pacing_style', 'standard')
+                        scene_duration = {'rapid': 2, 'standard': 4, 'slow_pan': 8}.get(pacing, 4)
 
-                if not scene_success:
-                    try:
-                        candidates = fetch_from_pixabay(keyword, min_duration)
-                        for sid, url in candidates:
-                            if sid in used_sources:
-                                continue
-                            try:
-                                download_asset(url, dest_path)
-                                if validate_clip(dest_path, keyword):
-                                    scene_success = True
-                                    used_sources.add(sid)
-                                    import shutil
-                                    shutil.copy(dest_path, cp)
-                                    print(f"Node 3: Fetched from Pixabay for '{keyword}' (id={sid})")
-                                    break
-                                else:
-                                    if os.path.exists(dest_path):
-                                        os.remove(dest_path)
-                            except Exception as e:
-                                print(f"Node 3: Pixabay candidate {sid} failed: {e}")
-                                if os.path.exists(dest_path):
-                                    os.remove(dest_path)
-                    except Exception as e:
-                        print(f"Node 3: Pixabay failed for {keyword}: {e}")
+                target_count = min(len(queries), 3) if scene_duration >= 5 else 1
+                clip_min_duration = max(2, scene_duration / target_count + 0.5)
+                scene_paths = []
+                print(f"Fetching scene {idx+1}: {queries} ({target_count} clip target, min_dur={clip_min_duration:.1f}s)")
 
-                if not scene_success:
+                media_spec = scene.get('licensed_media') or {}
+                if media_spec:
+                    entry = approved_media.get(media_spec.get('media_id'))
+                    if not entry:
+                        raise Exception(f"Scene {idx + 1} selected unapproved media ID")
+                    keep_audio = media_spec.get('playback_mode') == 'source_audio'
+                    if keep_audio and not entry.get('allow_original_audio'):
+                        raise Exception(f"Original audio is not approved for {entry.get('id')}")
+                    dest_path = os.path.join(video_assets_dir, f"scene_{idx}.mp4")
+                    _prepare_licensed_media(entry, dest_path, scene_duration, keep_audio)
+                    scene_paths.append(dest_path)
+                    print(f"Node 3: Prepared rights-cleared media '{entry.get('id')}'")
+
+                for query in queries if not media_spec else []:
+                    if len(scene_paths) >= target_count:
+                        break
+                    suffix = '' if not scene_paths else f'_clip_{len(scene_paths)}'
+                    dest_path = os.path.join(video_assets_dir, f"scene_{idx}{suffix}.mp4")
+                    if _try_stock_query(query, dest_path, clip_min_duration, used_sources):
+                        scene_paths.append(dest_path)
+
+                if not scene_paths:
                     if veo_generation_count >= 3:
                         raise Exception("Safety Limit: More than 3 Veo generations for a single video.")
 
+                    dest_path = os.path.join(video_assets_dir, f"scene_{idx}.mp4")
                     try:
-                        generate_veo_video(keyword, dest_path)
-                        if validate_clip(dest_path, keyword):
-                            scene_success = True
+                        generate_veo_video(queries[0], dest_path)
+                        if validate_clip(dest_path, queries[0]):
+                            scene_paths.append(dest_path)
                             veo_generation_count += 1
                             database.add_cost(video['id'], COST_VEO_GENERATION)
-                            print(f"Node 3: Veo generated for '{keyword}' ({veo_generation_count}/3)")
+                            print(f"Node 3: Veo generated for '{queries[0]}' ({veo_generation_count}/3)")
                         else:
                             if os.path.exists(dest_path):
                                 os.remove(dest_path)
@@ -305,10 +358,10 @@ def run():
                         if os.path.exists(dest_path):
                             os.remove(dest_path)
 
-                if not scene_success:
-                    raise Exception(f"Failed to fetch any valid asset for scene {idx}: '{keyword}'")
+                if not scene_paths:
+                    raise Exception(f"Failed to fetch any valid asset for scene {idx}: {queries}")
 
-                downloaded_paths.append(dest_path)
+                downloaded_paths.extend(scene_paths)
 
             database.update_video(video['id'], {
                 'video_path': json.dumps(downloaded_paths),
