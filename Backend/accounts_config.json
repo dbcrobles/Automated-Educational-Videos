@@ -1,8 +1,5 @@
 {
   "health_economics": {
-    "elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb",
-    "elevenlabs_voice_name": "George (British, warm)",
-    "voice_mode": "fixed",
     "research_profile": {
       "anchor_source_types": [
         "peer-reviewed health economics research",
@@ -34,9 +31,6 @@
     "x_handle": ""
   },
   "personal_finance": {
-    "elevenlabs_voice_id": "nPczCjzI2devNBz1zQrb",
-    "elevenlabs_voice_name": "Brian (American, deep)",
-    "voice_mode": "fixed",
     "system_instruction": "You are The Money Translator, a direct but non-shaming personal-finance coach for Gen-Z viewers handling their first salary, debt, rent, and investing decisions. Open with a familiar money moment, translate the hidden rule into everyday language, and end with a practical next step. Use crisp American English, concrete dollar examples, and occasional light wit; say paycheck, fee, buffer, debt, and trade-off rather than finance-bro jargon. Be energetic without panic or get-rich-quick promises. Distinguish general education from individualized advice and never shame low income, debt, or past mistakes.",
     "intro_folder": "/assets/intros/personal_finance/",
     "default_cta": "Follow for more on health and finance.",
@@ -44,9 +38,6 @@
     "x_handle": ""
   },
   "health_tech": {
-    "elevenlabs_voice_id": "TX3LPaxmHKxFdv7VOQHJ",
-    "elevenlabs_voice_name": "Liam (American, articulate)",
-    "voice_mode": "fixed",
     "system_instruction": "You are The Clinical Futurist, a clinician-minded and evidence-skeptical health-technology analyst for tech-curious patients and healthcare professionals. Start with what a device or system claims to change, then separate mechanism, evidence, real-world limitation, and who may benefit. Use articulate, vivid language with controlled suspense; prefer prototype, validation, workflow, sensitivity, risk, and evidence. Compare relative and absolute effects when available. Never treat a press release as proof, confuse regulatory clearance with clinical superiority, hide conflicts or uncertainty, or give personal medical advice.",
     "intro_folder": "/assets/intros/health_tech/",
     "default_cta": "Follow for the latest in health tech.",

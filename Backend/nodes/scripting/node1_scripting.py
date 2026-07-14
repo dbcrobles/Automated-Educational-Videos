@@ -310,7 +310,7 @@ def run():
                 continue
 
             # Success path
-            next_status = 'Pending_Voice' if video.get('auto_approve') else 'QA_Script'
+            next_status = 'Awaiting_Narration' if video.get('auto_approve') else 'QA_Script'
             database.update_video(video['id'], {
                 'script': json.dumps(output, indent=2),
                 'script_sources': json.dumps(output.get('sources', [])),

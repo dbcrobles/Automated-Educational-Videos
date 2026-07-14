@@ -4,7 +4,7 @@ State + models live in state.py; reusable UI pieces in components.py.
 """
 import reflex as rx
 
-from .state import State, VideoModel, ACCOUNT_IDS, POPULAR_VOICES
+from .state import State, VideoModel, ACCOUNT_IDS
 from .components import toggle_row, section_label, render_video_card, long_form_creator
 
 
@@ -299,19 +299,7 @@ def settings_tab() -> rx.Component:
                     spacing="2",
                     width="100%",
                 ),
-                rx.vstack(
-                    section_label("ElevenLabs Voiceover"),
-                    rx.select(
-                        list(POPULAR_VOICES.keys()),
-                        on_change=State.save_voice_name,
-                        value=State.selected_voice_name,
-                        size="3",
-                        width="100%",
-                    ),
-                    spacing="2",
-                    width="100%",
-                ),
-                columns="2",
+                columns="1",
                 spacing="6",
                 width="100%",
             ),
@@ -335,24 +323,6 @@ def settings_tab() -> rx.Component:
                 columns="3",
                 spacing="4",
                 width="100%",
-            ),
-            rx.box(
-                rx.hstack(
-                    rx.text("ℹ️", font_size="16px"),
-                    rx.text(
-                        "Voice changes take effect on the next video in the queue. Already-processing voiceovers will use the previous setting.",
-                        size="2",
-                        color="gray",
-                    ),
-                    spacing="2",
-                    align="start",
-                ),
-                background="var(--blue-2)",
-                border="1px solid var(--blue-5)",
-                border_radius="8px",
-                padding="3",
-                width="100%",
-                margin_top="4",
             ),
             spacing="4",
             align="start",

@@ -22,6 +22,7 @@ Backend/assets/intros/**/*.mp4
 
 # Remotion / Node
 Backend/remotion/node_modules/
+Backend/remotion/*.mp4
 Backend/remotion/public/[0-9]*
 Backend/remotion/public/music
 Backend/remotion/public/sfx

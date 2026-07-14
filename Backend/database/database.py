@@ -55,6 +55,7 @@ def migrate():
         ("use_degraded_model", "INTEGER DEFAULT 0"),
         ("beat_script", "TEXT"),
         ("beats_json", "TEXT"),
+        ("citation_qa_result", "TEXT"),
     ]
     for col, defn in migrations:
         try:
@@ -66,7 +67,8 @@ def migrate():
 
     # One-time status-value migration (idempotent)
     status_remaps = [
-        ("Pending_Voiceover", "Pending_Voice"),
+        ("Pending_Voiceover", "Awaiting_Narration"),
+        ("Pending_Voice", "Awaiting_Narration"),
         ("Pending_QA", "QA_Script"),
     ]
     for old, new in status_remaps:

@@ -21,20 +21,8 @@ from nodes.research.prompts import paste_normalize_prompt
 from .longform_state import (
     LongFormQAMixin, ensure_storyboard_asset_link, parse_storyboard_beats,
 )
+from .final_qa_state import FinalQAMixin, final_qa_view, publish_blockers
 
-POPULAR_VOICES = {
-    "Brian (American, deep)": "nPczCjzI2devNBz1zQrb",
-    "Charlie (American, natural)": "IKne3meq5aSn9XLyUdCD",
-    "George (British, warm)": "JBFqnCBsd6RMkjVDRZzb",
-    "Liam (American, articulate)": "TX3LPaxmHKxFdv7VOQHJ",
-    "Will (American, friendly)": "bIHbv24MWmeRgasZH58o",
-    "Aria (American, expressive)": "9BWtsMINqrJLrRacOk9x",
-    "Sarah (American, calm)": "EXAVITQu4vr4xnSDxMaL",
-    "Laura (American, upbeat)": "FGY2WhTYpPnrIDTdsKH5",
-    "Alice (British, confident)": "Xb7hH8MSUJpSbSDYk0k2",
-    "River (American, neutral)": "SAz9YHcvj6GT2YYXdXww"
-}
-VOICE_IDS_TO_NAMES = {v: k for k, v in POPULAR_VOICES.items()}
 ACCOUNTS_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     'Backend', 'accounts_config.json')
@@ -54,9 +42,8 @@ GEMINI_MODEL = "gemini-3.1-pro"
 PIPELINE_STAGES = [
     "Pending_Research", "QA_Research", "Pending_BeatScript",
     "QA_BeatScript", "Pending_Storyboard", "QA_Storyboard",
-    "Awaiting_Narration",
-    "Pending_Script", "QA_Script",
-    "Pending_Voice", "Pending_Assets", "Pending_Render",
+    "Pending_Script", "QA_Script", "Awaiting_Narration",
+    "Pending_LongRender", "Pending_Assets", "Pending_Render",
     "QA_Final", "Ready_To_Publish", "Published"
 ]
 
@@ -70,9 +57,9 @@ STATUS_META = {
     "Awaiting_Narration":{"label": "Awaiting Narration","color": "teal"},
     "Pending_Script":    {"label": "Scripting…",      "color": "indigo"},
     "QA_Script":         {"label": "Awaiting Approval","color": "orange"},
-    "Pending_Voice":     {"label": "Voiceover…",       "color": "violet"},
     "Pending_Assets":    {"label": "Fetching Assets…", "color": "blue"},
     "Pending_Render":    {"label": "Rendering…",       "color": "purple"},
+    "Pending_LongRender":{"label": "Long Render…",     "color": "purple"},
     "QA_Final":          {"label": "Final Check",      "color": "amber"},
     "Ready_To_Publish":  {"label": "Publishing…",      "color": "teal"},
     "Published":         {"label": "Published ✓",      "color": "green"},
@@ -84,6 +71,10 @@ class SourceLinkModel(BaseModel):
     label: str
     href: str
     role: str = "supporting"
+
+class NarrationBeatModel(BaseModel):
+    order: int
+    spoken_text: str
 
 class VideoModel(BaseModel):
     id: int
@@ -130,11 +121,19 @@ class VideoModel(BaseModel):
     beat_script_duration: float = 0.0
     beats_json_str: str = ""
     storyboard_beats: list[dict] = []
+    narration_beats: list[NarrationBeatModel] = []
+    citation_issues: list[dict] = []
+    citation_unresolved: int = 0
+    citation_checked: bool = False
+    disclosure_altered: bool = False
+    disclosure_ai: bool = False
+    disclosure_sources: bool = False
+    disclosure_disclaimer: bool = False
 
 class BatchSplitOutput(BaseModel):
     sub_topics: list[str]
 
-class State(LongFormQAMixin, rx.State):
+class State(LongFormQAMixin, FinalQAMixin, rx.State):
     videos: list[VideoModel] = []
     engine_online: bool = False
 
@@ -163,10 +162,10 @@ class State(LongFormQAMixin, rx.State):
     # Intro Management
     upload_account: str = "personal_finance"
     intro_files: list[str] = []
+    narration_video_id: int = 0
 
     # Account Settings
     settings_account: str = "personal_finance"
-    selected_voice_name: str = "Brian (American, deep)"
     default_cta_text: str = ""
     snapchat_ad_account_id: str = ""
     x_handle: str = ""
@@ -432,6 +431,14 @@ class State(LongFormQAMixin, rx.State):
             dossier, core, readable = _research_view(row)
             art_origin, art_claims, art_dps = _artifact_view(row)
             bs_title, bs_beats, bs_duration = _beat_script_view(row)
+            realized_beats = parse_storyboard_beats(row.get("beats_json"))
+            try:
+                legacy_scenes = json.loads(row.get("script") or "{}").get("scenes", [])
+            except (json.JSONDecodeError, TypeError):
+                legacy_scenes = []
+            narration_beats = realized_beats or bs_beats or [
+                {"order": index, "spoken_text": scene.get("narration", "")}
+                for index, scene in enumerate(legacy_scenes)]
             videos.append(VideoModel(
                 id=row['id'],
                 topic=row['topic'],
@@ -476,7 +483,9 @@ class State(LongFormQAMixin, rx.State):
                 beat_script_title=bs_title,
                 beat_script_duration=bs_duration,
                 beats_json_str=row.get("beats_json") or "",
-                storyboard_beats=parse_storyboard_beats(row.get("beats_json")),
+                storyboard_beats=realized_beats,
+                narration_beats=narration_beats,
+                **final_qa_view(row),
             ))
         self.videos = videos
 
@@ -536,11 +545,22 @@ class State(LongFormQAMixin, rx.State):
         self.load_videos()
 
     def approve_script(self, video_id: int):
-        database.update_video(video_id, {'status': 'Pending_Voice'})
+        database.update_video(video_id, {'status': 'Awaiting_Narration'})
         self.load_videos()
 
 
     def approve_video(self, video_id: int):
+        """Phase 7: long-form publish is gated on the citation check + checklist."""
+        conn = database.get_connection()
+        conn.row_factory = database.sqlite3.Row
+        row = conn.execute(
+            "SELECT format, citation_qa_result, compliance_metadata "
+            "FROM videos WHERE id = ?", (video_id,)).fetchone()
+        conn.close()
+        if row and row['format'] == 'long':
+            blockers = publish_blockers(dict(row))
+            if blockers:
+                return rx.toast.error("Cannot publish yet: " + "; ".join(blockers))
         database.update_video(video_id, {'status': 'Ready_To_Publish'})
         self.load_videos()
 
@@ -548,16 +568,16 @@ class State(LongFormQAMixin, rx.State):
         """Smart retry: resume from the furthest stage that already has valid output on disk.
 
         Stage order (earliest → latest):
-          Pending_Script → (QA_Script) → Pending_Voice → Pending_Assets
+          Pending_Script → (QA_Script) → Awaiting_Narration → Pending_Assets
           → Pending_Render → (QA_Final) → Ready_To_Publish → Published
 
         Checks (most advanced first):
           1. voiceover_path exists on disk AND stock video assets exist on disk
-             → resume at Pending_Render  (skips scripting + ElevenLabs + asset fetch)
+             → resume at Pending_Render  (skips scripting, alignment, and asset fetch)
           2. voiceover_path exists on disk only
-             → resume at Pending_Assets  (skips scripting + ElevenLabs)
+             → resume at Pending_Assets  (skips scripting and alignment)
           3. script JSON exists in DB (QA was approved)
-             → resume at Pending_Voice  (skips scripting + QA)
+             → resume at Awaiting_Narration  (skips scripting + QA)
           4. Fallback → Pending_Script  (full restart)
         """
         conn = database.get_connection()
@@ -575,7 +595,7 @@ class State(LongFormQAMixin, rx.State):
 
         # Check 3: script exists (QA_Script was approved)
         if video.get('script'):
-            resume_status = 'Pending_Voice'
+            resume_status = 'Awaiting_Narration'
 
         # Check 2: voiceover file is on disk
         vpath = video.get('voiceover_path') or ''
@@ -647,16 +667,6 @@ class State(LongFormQAMixin, rx.State):
             'script_retry_count': 0,
             'qa_feedback': note or 'Refresh the research, verify what changed, then rewrite factual claims.',
         })
-        self.rejection_notes = {k: v for k, v in self.rejection_notes.items() if k != video_id}
-        self.load_videos()
-
-    def reject_to_voiceover(self, video_id: int):
-        """Send back to Node 2b (ElevenLabs) with editor note — re-record only."""
-        note = str(self.rejection_notes.get(video_id, "")).strip()
-        updates = {'status': 'Pending_Voice', 'error_message': None}
-        if note:
-            updates['qa_feedback'] = note
-        database.update_video(video_id, updates)
         self.rejection_notes = {k: v for k, v in self.rejection_notes.items() if k != video_id}
         self.load_videos()
 
@@ -745,8 +755,6 @@ class State(LongFormQAMixin, rx.State):
         with open(ACCOUNTS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         acc = config.get(self.settings_account, {})
-        voice_id = acc.get('elevenlabs_voice_id', POPULAR_VOICES["Brian (American, deep)"])
-        self.selected_voice_name = VOICE_IDS_TO_NAMES.get(voice_id, "Brian (American, deep)")
         self.default_cta_text = acc.get('default_cta', "")
         self.snapchat_ad_account_id = acc.get('snapchat_ad_account_id', "")
         self.x_handle = acc.get('x_handle', "")
@@ -754,10 +762,6 @@ class State(LongFormQAMixin, rx.State):
     def update_settings_account(self, val: str):
         self.settings_account = val
         self.load_settings()
-
-    def save_voice_name(self, val: str):
-        self.selected_voice_name = val
-        self._save_settings()
 
     @rx.event
     def set_default_cta_text(self, val: str):
@@ -775,14 +779,9 @@ class State(LongFormQAMixin, rx.State):
         self._save_settings()
 
     def _save_settings(self):
-        voice_id = POPULAR_VOICES.get(self.selected_voice_name, POPULAR_VOICES["Brian (American, deep)"])
         with open(ACCOUNTS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         if self.settings_account in config:
-            config[self.settings_account]['elevenlabs_voice_id'] = voice_id
-            config[self.settings_account]['elevenlabs_voice_name'] = self.selected_voice_name
-            config[self.settings_account]['voice_mode'] = 'fixed'
-            config[self.settings_account].pop('voice_profiles', None)
             config[self.settings_account]['default_cta'] = self.default_cta_text
             config[self.settings_account]['snapchat_ad_account_id'] = self.snapchat_ad_account_id
             config[self.settings_account]['x_handle'] = self.x_handle

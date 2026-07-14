@@ -1,9 +1,13 @@
 import { Composition } from "remotion";
 import { ShortVideo } from "./ShortVideo";
+import { LongVideo, longVideoSchema, calculateLongVideoMetadata, LongVideoProps } from "./LongVideo";
+import { ShortFromBeat, shortFromBeatSchema, calculateShortFromBeatMetadata, ShortFromBeatProps } from "./ShortFromBeat";
+import sampleLongProps from "./sampleLongProps.json";
 import { z } from "zod";
 
 export const RemotionRoot: React.FC = () => {
   return (
+    <>
     <Composition
       id="ShortVideo"
       component={ShortVideo}
@@ -94,5 +98,33 @@ export const RemotionRoot: React.FC = () => {
         durationInFrames: props.durationInFrames,
       })}
     />
+    <Composition
+      id="LongVideo"
+      component={LongVideo}
+      schema={longVideoSchema}
+      defaultProps={sampleLongProps as unknown as LongVideoProps}
+      calculateMetadata={calculateLongVideoMetadata}
+    />
+    <Composition
+      id="ShortFromBeat"
+      component={ShortFromBeat}
+      schema={shortFromBeatSchema}
+      defaultProps={{
+        fps: 30,
+        width: 1080,
+        height: 1920,
+        durationInFrames: 300,
+        assetBase: "sample",
+        introCard: { text: "One-line hook label", durationInFrames: 60 },
+        voiceoverSrc: "sample/voiceover.mp3",
+        captions: [{ word: "Hello", start: 0.0, end: 0.5 }],
+        elements: [],
+        layoutMode: "vertical",
+        accentColor: "#FFD447",
+        compliance: { text: "AI-Assisted", fullDuration: true },
+      }}
+      calculateMetadata={calculateShortFromBeatMetadata}
+    />
+    </>
   );
 };

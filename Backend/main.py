@@ -11,10 +11,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from nodes.research import node0_research
 from nodes.beat_script import node1b_beat_script
 from nodes.storyboard import node3b_storyboard
+from nodes.narration import node2b_narration
 from nodes.scripting import node1_scripting
-from nodes.voice import node2_voice
 from nodes.asset_fetcher import node3_asset_fetcher
 from nodes.render_worker import node4_render_worker
+from nodes.qa_gate import node5_qa_gate
 from nodes.publisher import node6_publisher
 
 HEARTBEAT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orchestrator.heartbeat')
@@ -60,11 +61,11 @@ def main():
             # Node 3b: Storyboard (long-form pipeline)
             node3b_storyboard.run()
 
+            # Node 2b: Uploaded narration alignment (local Whisper)
+            node2b_narration.run()
+
             # Node 1: Scripting (Gemini API)
             node1_scripting.run()
-
-            # Node 2: Voice (ElevenLabs)
-            node2_voice.run()
 
             # Node 3: Asset Fetching (Network IO)
             node3_asset_fetcher.run()
@@ -72,7 +73,10 @@ def main():
             # Node 4: Render Worker (FFmpeg - Heavy Memory)
             node4_render_worker.run()
 
-            # Node 5: Publishing (WoopSocial API + Custom platforms)
+            # Node 5: Final-QA citation gate + description (long-form)
+            node5_qa_gate.run()
+
+            # Node 6: Publishing (WoopSocial API + Custom platforms)
             node6_publisher.run()
 
         except Exception as e:

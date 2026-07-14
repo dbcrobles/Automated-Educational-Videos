@@ -27,6 +27,7 @@ from nodes.asset_fetcher.node3_asset_fetcher import _try_stock_query, clean_quer
 
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'assets')
 BROLL_CANDIDATE_COUNT = 3
+BEAT_VISUALS_RE = re.compile(r'^\[BEAT_VISUALS:(\d+)\]')
 
 
 def _build_chart_spec(ref, artifact):
@@ -124,6 +125,47 @@ def _load_rejected_sources(video_id, beats_json_path):
     return rejected
 
 
+def _redo_beat_visuals(video, beat_order):
+    """Phase 7: re-fetch b-roll for ONE beat, excluding that beat's prior
+    sources. Every other beat's files and metadata stay untouched, then the
+    whole video re-renders from the updated beats.json (v1 — no partials)."""
+    video_id = video['id']
+    beats_json_path = os.path.join(ASSETS_DIR, str(video_id), 'beats.json')
+    with open(beats_json_path) as f:
+        data = json.load(f)
+    target = next((b for b in data.get('beats', []) if b.get('order') == beat_order), None)
+    if target is None:
+        raise Exception(f"Beat {beat_order} not found in beats.json")
+
+    rejected, used = set(), set()
+    for beat in data['beats']:
+        for el in beat.get('elements', []):
+            ids = {el.get('source_id'), *el.get('candidate_sources', {}).values()}
+            ids.discard(None)
+            (rejected if beat is target else used).update(ids)
+
+    for cue_idx, el in enumerate(target.get('elements', [])):
+        if el.get('kind') != 'broll':
+            continue
+        candidates, candidate_sources = _realize_broll(
+            video_id, beat_order, cue_idx, el.get('description'), used, rejected)
+        el.update(
+            src=candidates[0] if candidates else None,
+            candidates=candidates, candidate_sources=candidate_sources,
+            source_id=candidate_sources.get(candidates[0]) if candidates else None,
+            realized=bool(candidates))
+
+    with open(beats_json_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    database.update_video(video_id, {
+        'beats_json': json.dumps(data),
+        'status': 'Pending_LongRender',
+        'qa_feedback': None, 'error_message': None,
+    })
+    database.resolve_pipeline_errors(video_id, 'Node 3b')
+    print(f"Node 3b: Video {video_id} beat {beat_order} visuals refetched → Pending_LongRender")
+
+
 def _process_video(video):
     """Realize all beats for one video -> beats.json + DB column."""
     video_id = video['id']
@@ -171,6 +213,10 @@ def run():
         if video.get('format') != 'long':
             continue
         try:
+            match = BEAT_VISUALS_RE.match(str(video.get('qa_feedback') or ''))
+            if match:
+                _redo_beat_visuals(video, int(match.group(1)))
+                continue
             if not video.get('beat_script'):
                 raise Exception("No beat_script found - cannot storyboard.")
             if not video.get('research_artifact'):

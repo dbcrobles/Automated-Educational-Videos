@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS videos (
     research_dossier TEXT,
     storyboard_draft TEXT,
     script_cost_estimate REAL DEFAULT 0,
-    visual_qa_result TEXT
+    visual_qa_result TEXT,
+    citation_qa_result TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cost_events (

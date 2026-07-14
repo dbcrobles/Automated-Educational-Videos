@@ -242,13 +242,17 @@ def ensure_sfx_assets():
 BASE_VF = (f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
            f"crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS}")
 
+LONG_WIDTH, LONG_HEIGHT = 1920, 1080
+LONG_VF = (f"scale={LONG_WIDTH}:{LONG_HEIGHT}:force_original_aspect_ratio=increase,"
+           f"crop={LONG_WIDTH}:{LONG_HEIGHT},setsar=1,fps={FPS}")
 
-def preprocess_clip(src, dst, needed_sec, keep_audio=False):
+
+def preprocess_clip(src, dst, needed_sec, keep_audio=False, vf=BASE_VF):
     src_dur = probe_duration(src)
     cmd = [FFMPEG, '-y']
     if src_dur < needed_sec:
         cmd += ['-stream_loop', '-1']
-    cmd += ['-i', src, '-t', f'{needed_sec:.3f}', '-vf', BASE_VF]
+    cmd += ['-i', src, '-t', f'{needed_sec:.3f}', '-vf', vf]
     if keep_audio:
         cmd += ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
     else:
@@ -412,8 +416,8 @@ def remove_public_symlinks(video_id):
             os.remove(link)
 
 
-def render_remotion(comp_json, out_path):
-    cmd = ['npx', 'remotion', 'render', 'src/index.ts', 'ShortVideo', out_path,
+def render_remotion(comp_json, out_path, composition='ShortVideo'):
+    cmd = ['npx', 'remotion', 'render', 'src/index.ts', composition, out_path,
            '--props', comp_json, '--concurrency', '2']
     r = subprocess.run(cmd, cwd=REMOTION_DIR, capture_output=True, text=True,
                        timeout=1800)
@@ -539,7 +543,135 @@ def render_video(video):
     return final_path
 
 
+# ─── Long-form render (Phase 6): beats.json → LongVideo composition ─────────
+
+MOOD_KEYWORDS = {
+    'tense': ('tense', 'tension', 'dark', 'urgent', 'dramatic', 'ominous'),
+    'uplifting': ('uplift', 'hope', 'bright', 'triumph', 'optimis', 'inspir'),
+    'mysterious': ('myster', 'eerie', 'curious', 'wonder', 'suspense', 'intrigu'),
+}
+
+
+def music_mood_from_beats(beats):
+    """Map free-text music_cue lines onto the four music mood folders."""
+    votes = []
+    for beat in beats:
+        cue = str(beat.get('music_cue') or '').lower()
+        votes.append(next((mood for mood, keys in MOOD_KEYWORDS.items()
+                           if any(k in cue for k in keys)), 'neutral'))
+    non_neutral = [v for v in votes if v != 'neutral']
+    return max(set(non_neutral), key=non_neutral.count) if non_neutral else 'neutral'
+
+
+def beat_windows(beats):
+    """Continuous [from, until) seconds per beat — mirrors LongVideo.tsx."""
+    if not all(isinstance(b.get('start'), (int, float))
+               and isinstance(b.get('end'), (int, float)) for b in beats):
+        raise Exception("beats.json is missing narration timing (start/end). Re-run Node 2b.")
+    last_until = float(beats[-1]['end']) + 0.4
+    windows = []
+    for i, beat in enumerate(beats):
+        start = 0.0 if i == 0 else float(beat['start'])
+        until = float(beats[i + 1]['start']) if i + 1 < len(beats) else last_until
+        windows.append((start, max(start + 0.5, until)))
+    return windows
+
+
+def preprocess_long_brolls(vid_dir, beats, windows):
+    """Normalize every realized broll clip to 1920×1080@FPS covering its window."""
+    for i, (beat, (w_from, w_until)) in enumerate(zip(beats, windows)):
+        for j, el in enumerate(beat.get('elements', [])):
+            src = el.get('src')
+            if not src or not str(src).endswith('.mp4'):
+                continue
+            window = (w_until - w_from) - float(el.get('start_offset_sec') or 0)
+            needed = float(el.get('duration_sec') or window) + 0.5
+            abs_src = os.path.join(vid_dir, src)
+            if not os.path.exists(abs_src):
+                raise Exception(f"Missing broll clip {src} for beat {beat.get('order')}.")
+            name = f'prepped_long_{i}_{j}.mp4'
+            preprocess_clip(abs_src, os.path.join(vid_dir, name),
+                            max(1.0, needed), vf=LONG_VF)
+            el['src'] = name
+
+
+def build_long_props(video, beats_data, words):
+    vid = video['id']
+    music_src = pick_music(vid, music_mood_from_beats(beats_data['beats']))
+    props = {
+        'fps': FPS, 'width': LONG_WIDTH, 'height': LONG_HEIGHT,
+        'assetBase': str(vid),
+        'beats': beats_data['beats'],
+        'voiceoverSrc': f"{vid}/voiceover.mp3",
+        'captions': [{'word': w['word'], 'start': w['start'], 'end': w['end']}
+                     for w in words],
+        'music': ({'src': music_src, 'volumeDb': -24, 'fadeOutSec': 2}
+                  if music_src else None),
+        'accentColor': '#FFD447',
+    }
+    comp_json = os.path.join(ASSETS_DIR, str(vid), 'comp_long.json')
+    with open(comp_json, 'w') as f:
+        json.dump(props, f, indent=2)
+    return comp_json
+
+
+def render_long_video(video):
+    """Phase 6: render beats.json through LongVideo. Remotion required — no ffmpeg fallback."""
+    vid = video['id']
+    vid_dir = os.path.join(ASSETS_DIR, str(vid))
+    beats_path = os.path.join(vid_dir, 'beats.json')
+    if not os.path.exists(beats_path):
+        raise Exception("beats.json not found — re-run storyboard (Pending_Storyboard).")
+    with open(beats_path) as f:
+        beats_data = json.load(f)
+    beats = beats_data.get('beats') or []
+    if not beats:
+        raise Exception("beats.json contains no beats.")
+
+    voiceover = resolve_voiceover(video)
+    audio_dur = probe_duration(voiceover)
+    words = load_captions_words(video)
+    windows = beat_windows(beats)
+    expected_dur = windows[-1][1]
+    print(f"Node 4: long video {vid}: {len(beats)} beats, audio {audio_dur:.1f}s, "
+          f"{len(words)} caption words")
+
+    preprocess_long_brolls(vid_dir, beats, windows)
+    comp_json = build_long_props(video, beats_data, words)
+    rendered = os.path.join(vid_dir, 'rendered_long.mp4')
+    final_path = os.path.join(vid_dir, 'final.mp4')
+    make_public_symlinks(vid)
+    try:
+        print(f"Node 4: Rendering LongVideo ({expected_dur:.1f}s) via Remotion...")
+        render_remotion(comp_json, rendered, composition='LongVideo')
+    finally:
+        remove_public_symlinks(vid)
+    stamp_metadata(video, rendered, final_path)
+
+    out_dur = probe_duration(final_path)
+    if abs(out_dur - expected_dur) > 1.0:
+        raise Exception(f"Long render sanity check failed: output {out_dur:.1f}s "
+                        f"vs expected {expected_dur:.1f}s (narration {audio_dur:.1f}s).")
+    for p in glob.glob(os.path.join(vid_dir, 'prepped_long_*.mp4')):
+        os.remove(p)
+    print(f"Node 4: Long-form final {out_dur:.1f}s → {final_path}")
+    return final_path
+
+
 # ─── Worker loop ─────────────────────────────────────────────────────────────
+
+def _merged_compliance(video):
+    """Phase 7: keep the owner's disclosure checklist across re-renders."""
+    try:
+        meta = json.loads(video.get('compliance_metadata') or '{}')
+        if not isinstance(meta, dict):
+            meta = {}
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+    meta.update(ai_disclosure='AI-Assisted', model=SCRIPT_MODEL,
+                sponsored=bool(video.get('is_sponsored')))
+    return json.dumps(meta)
+
 
 def run():
     print("Node 4: Render worker started.")
@@ -567,6 +699,24 @@ def run():
             msg = str(e)
             print(f"Node 4: FAILED video {video['id']}: {msg}")
             database.fail_video(video['id'], 'Node 4', 'RENDER_FAILED', msg)
+
+    for video in database.fetch_videos_by_status('Pending_LongRender'):
+        if video.get('format') != 'long':
+            continue
+        print(f"Node 4: Long-form render for video {video['id']} — '{video['topic']}'")
+        try:
+            final_path = render_long_video(video)
+            database.update_video(video['id'], {
+                'final_path': final_path,
+                'status': 'QA_Final',
+                'compliance_metadata': _merged_compliance(video),
+                'error_message': None,
+            })
+            database.resolve_pipeline_errors(video['id'], 'Node 4')
+            print(f"Node 4: Video {video['id']} → QA_Final. Output: {final_path}")
+        except Exception as e:
+            print(f"Node 4: FAILED long video {video['id']}: {e}")
+            database.fail_video(video['id'], 'Node 4', 'LONG_RENDER_FAILED', str(e))
 
 
 if __name__ == "__main__":

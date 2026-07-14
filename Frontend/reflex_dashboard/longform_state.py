@@ -53,6 +53,33 @@ class LongFormQAMixin(rx.State, mixin=True):
         database.update_video(video_id, {"status": "Awaiting_Narration"})
         self.load_videos()
 
+    def select_narration_video(self, video_id: int):
+        self.narration_video_id = video_id
+
+    async def upload_narration(self, files: list[rx.UploadFile]):
+        """Save one owner recording under the canonical name the worker polls."""
+        video_id = self.narration_video_id
+        if len(files) != 1:
+            return rx.toast.error("Choose exactly one narration file.")
+        extension = os.path.splitext(files[0].filename or "")[1].lower()
+        if extension not in {".mp3", ".m4a", ".wav"}:
+            return rx.toast.error("Narration must be an MP3, M4A, or WAV file.")
+        row = database.fetch_videos_by_status(
+            "Awaiting_Narration", f"AND id = {int(video_id)}")
+        if not row:
+            return rx.toast.error("This video is no longer awaiting narration.")
+
+        folder = os.path.join(PROJECT_ROOT, "Backend", "assets", str(video_id))
+        os.makedirs(folder, exist_ok=True)
+        for suffix in (".mp3", ".m4a", ".wav"):
+            old_path = os.path.join(folder, f"narration{suffix}")
+            if os.path.exists(old_path):
+                os.remove(old_path)
+        with open(os.path.join(folder, f"narration{extension}"), "wb") as destination:
+            destination.write(await files[0].read())
+        self.load_videos()
+        return rx.toast.success("Narration uploaded; local alignment will start shortly.")
+
     def reject_storyboard(self, video_id: int):
         note = str(self.rejection_notes.get(video_id, "")).strip()
         feedback = f"[VISUAL_REPLACEMENT] {note or 'Replace the rejected visual choices.'}"

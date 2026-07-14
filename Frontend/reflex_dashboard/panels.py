@@ -4,6 +4,53 @@ import reflex as rx
 from .state import State, VideoModel
 
 
+def narration_panel(video: VideoModel) -> rx.Component:
+    """Recording script and single-file upload for the owner narration gate."""
+    upload_id = f"narration_{video.id}"
+    return rx.cond(
+        video.status == "Awaiting_Narration",
+        rx.vstack(
+            rx.text("🎙️ Record Owner Narration", size="2", weight="bold"),
+            rx.text(
+                "Read each beat in order, then upload one MP3, M4A, or WAV recording.",
+                size="2", color="gray",
+            ),
+            rx.foreach(video.narration_beats, lambda beat: rx.box(
+                rx.vstack(
+                    rx.text(f"Beat {beat.order}", size="1", weight="bold", color="gray"),
+                    rx.text(beat.spoken_text, size="2"),
+                    align="start", spacing="1",
+                ),
+                background="var(--gray-1)", border_radius="6px",
+                padding="3", width="100%",
+            )),
+            rx.upload(
+                rx.vstack(
+                    rx.text("🎧", font_size="28px"),
+                    rx.text("Drop narration here or click to browse", size="2", weight="medium"),
+                    align="center", spacing="1", padding="5",
+                ),
+                id=upload_id, multiple=False, max_files=1,
+                accept={
+                    "audio/mpeg": [".mp3"], "audio/mp4": [".m4a"],
+                    "audio/wav": [".wav"],
+                },
+                border="2px dashed var(--gray-5)", border_radius="10px",
+                width="100%", background="var(--gray-1)",
+            ),
+            rx.button(
+                "⬆️ Upload Narration",
+                on_click=[
+                    State.select_narration_video(video.id),
+                    State.upload_narration(rx.upload_files(upload_id=upload_id)),
+                ],
+                color_scheme="teal", size="2",
+            ),
+            align="start", spacing="3", width="100%",
+        ),
+    )
+
+
 def research_artifact_panel(video: VideoModel) -> rx.Component:
     """QA_Research review card."""
     return rx.cond(
