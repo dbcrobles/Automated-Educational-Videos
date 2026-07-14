@@ -2,6 +2,7 @@
 import reflex as rx
 
 from .state import State, VideoModel, ACCOUNT_IDS
+from .panels import research_artifact_panel, beat_script_panel, storyboard_panel
 
 
 def toggle_row(label: str, icon: str, state_val, handler) -> rx.Component:
@@ -43,6 +44,10 @@ def status_badge(status: str) -> rx.Component:
         make_badge("Pending_Research",  "🔬 Researching…",       "cyan"),
         make_badge("QA_Research",       "🔎 Research QA",         "blue"),
         make_badge("Pending_BeatScript","🎵 Awaiting Beats",      "indigo"),
+        make_badge("QA_BeatScript",     "📝 Beat Script QA",      "orange"),
+        make_badge("Pending_Storyboard","🎬 Storyboard…",         "indigo"),
+        make_badge("QA_Storyboard",   "🖼️ Storyboard QA",       "orange"),
+        make_badge("Awaiting_Narration","🎙️ Awaiting Narration",  "teal"),
         make_badge("Pending_Script",    "⚙️  Scripting…",        "indigo"),
         make_badge("QA_Script",         "✋ Awaiting Approval",   "orange"),
         make_badge("Pending_Voice",     "🎙️  Voiceover…",        "violet"),
@@ -479,102 +484,14 @@ def render_video_card(video: VideoModel) -> rx.Component:
                 ),
             ),
 
-            # ── QA_Research: review claims & data points ─────────────
-            rx.cond(
-                video.status == "QA_Research",
-                rx.vstack(
-                    rx.hstack(
-                        rx.text("🔎 Research Artifact", size="2", weight="bold"),
-                        rx.spacer(),
-                        rx.cond(
-                            video.artifact_origin != "",
-                            rx.badge(video.artifact_origin, color_scheme="gray", size="1"),
-                        ),
-                        width="100%", align="center",
-                    ),
-                    rx.cond(
-                        video.artifact_claims.length() > 0,
-                        rx.vstack(
-                            rx.text("Claims", size="1", weight="bold", color="gray"),
-                            rx.foreach(video.artifact_claims, lambda claim: rx.box(
-                                rx.vstack(
-                                    rx.text(claim["text"], size="2"),
-                                    rx.foreach(claim["sources"], lambda src: rx.link(
-                                        src["name"], href=src["url"], is_external=True,
-                                        color="blue", size="1")),
-                                    align="start", spacing="1",
-                                ),
-                                background="var(--gray-1)", border_radius="6px",
-                                padding="3", width="100%",
-                            )),
-                            align="start", spacing="2", width="100%",
-                        ),
-                    ),
-                    rx.cond(
-                        video.artifact_data_points.length() > 0,
-                        rx.vstack(
-                            rx.text("Data Points (chart-ready)", size="1", weight="bold", color="gray"),
-                            rx.foreach(video.artifact_data_points, lambda dp: rx.box(
-                                rx.vstack(
-                                    rx.text(dp["label"], size="2", weight="medium"),
-                                    rx.text(f"Unit: {dp['unit']}", size="1", color="gray"),
-                                    rx.foreach(dp["points"], lambda pt: rx.text(
-                                        f"  • {pt['label']}: {pt['value']}", size="1")),
-                                    align="start", spacing="1",
-                                ),
-                                background="var(--cyan-1)", border_radius="6px",
-                                padding="3", width="100%",
-                            )),
-                            align="start", spacing="2", width="100%",
-                        ),
-                    ),
-                    rx.cond(
-                        video.artifact_claims.length() == 0,
-                        rx.vstack(
-                            rx.text("No artifact yet — paste a Deep Research export below.", size="2", color="gray"),
-                            rx.text_area(
-                                placeholder="Paste your Gemini Deep Research export here…",
-                                on_change=lambda val: State.set_deep_research_paste(val),
-                                width="100%", rows="6", size="2",
-                            ),
-                            rx.button(
-                                "📋 Normalize & Save",
-                                on_click=State.paste_deep_research,
-                                color_scheme="blue", size="2",
-                            ),
-                            align="start", spacing="2", width="100%",
-                        ),
-                    ),
-                    rx.divider(margin_y="1"),
-                    rx.hstack(
-                        rx.button(
-                            "✅ Approve → Beat Script",
-                            color_scheme="green", size="2",
-                            on_click=lambda: State.approve_research(video.id),
-                        ),
-                        rx.cond(
-                            video.artifact_origin == "automated_researcher",
-                            rx.button(
-                                "↺ Re-run Research",
-                                color_scheme="blue", variant="soft", size="2",
-                                on_click=lambda: State.rerun_research(video.id),
-                            ),
-                            rx.button(
-                                "↺ Re-paste",
-                                color_scheme="blue", variant="soft", size="2",
-                                on_click=lambda: State.repaste_research(video.id),
-                            ),
-                        ),
-                        rx.button(
-                            "🗑 Delete",
-                            color_scheme="red", variant="ghost", size="2",
-                            on_click=lambda: State.delete_video(video.id),
-                        ),
-                        spacing="2", wrap="wrap",
-                    ),
-                    align="start", spacing="3", width="100%",
-                ),
-            ),
+            # ── QA_Research: review claims & data points (extracted to research_artifact_panel) ──
+            research_artifact_panel(video),
+
+            # ── QA_BeatScript: review beats (extracted to beat_script_panel) ──
+            beat_script_panel(video),
+
+            # ── QA_Storyboard: review storyboard (extracted to storyboard_panel) ──
+            storyboard_panel(video),
 
             # ── Paused_Cost: three choices ────────────────────────────
             rx.cond(
@@ -613,6 +530,8 @@ def render_video_card(video: VideoModel) -> rx.Component:
                 (video.status != "QA_Script") &
                 (video.status != "QA_Final") &
                 (video.status != "QA_Research") &
+                (video.status != "QA_BeatScript") &
+                (video.status != "QA_Storyboard") &
                 (video.status != "Paused_Cost") &
                 (video.status != "Published"),
                 rx.hstack(

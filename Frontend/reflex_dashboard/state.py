@@ -18,6 +18,9 @@ sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.
 from database import database
 from schemas.research_artifact import ResearchArtifact
 from nodes.research.prompts import paste_normalize_prompt
+from .longform_state import (
+    LongFormQAMixin, ensure_storyboard_asset_link, parse_storyboard_beats,
+)
 
 POPULAR_VOICES = {
     "Brian (American, deep)": "nPczCjzI2devNBz1zQrb",
@@ -50,6 +53,8 @@ GEMINI_MODEL = "gemini-3.1-pro"
 # Pipeline stage order for progress bar display
 PIPELINE_STAGES = [
     "Pending_Research", "QA_Research", "Pending_BeatScript",
+    "QA_BeatScript", "Pending_Storyboard", "QA_Storyboard",
+    "Awaiting_Narration",
     "Pending_Script", "QA_Script",
     "Pending_Voice", "Pending_Assets", "Pending_Render",
     "QA_Final", "Ready_To_Publish", "Published"
@@ -59,6 +64,10 @@ STATUS_META = {
     "Pending_Research":  {"label": "Researching…",     "color": "cyan"},
     "QA_Research":       {"label": "Research QA",      "color": "blue"},
     "Pending_BeatScript":{"label": "Awaiting Beats",   "color": "indigo"},
+    "QA_BeatScript":     {"label": "Beat Script QA",   "color": "orange"},
+    "Pending_Storyboard":{"label": "Storyboard…",      "color": "indigo"},
+    "QA_Storyboard":    {"label": "Storyboard QA",     "color": "orange"},
+    "Awaiting_Narration":{"label": "Awaiting Narration","color": "teal"},
     "Pending_Script":    {"label": "Scripting…",      "color": "indigo"},
     "QA_Script":         {"label": "Awaiting Approval","color": "orange"},
     "Pending_Voice":     {"label": "Voiceover…",       "color": "violet"},
@@ -115,11 +124,17 @@ class VideoModel(BaseModel):
     artifact_claims: list[dict] = []
     artifact_data_points: list[dict] = []
     use_degraded_model: bool = False
+    beat_script_json: str = ""
+    beat_script_beats: list[dict] = []
+    beat_script_title: str = ""
+    beat_script_duration: float = 0.0
+    beats_json_str: str = ""
+    storyboard_beats: list[dict] = []
 
 class BatchSplitOutput(BaseModel):
     sub_topics: list[str]
 
-class State(rx.State):
+class State(LongFormQAMixin, rx.State):
     videos: list[VideoModel] = []
     engine_online: bool = False
 
@@ -343,6 +358,7 @@ class State(rx.State):
             self.engine_online = False
 
     def load_videos(self):
+        ensure_storyboard_asset_link()
         conn = database.get_connection()
         conn.row_factory = database.sqlite3.Row
         cursor = conn.cursor()
@@ -402,10 +418,20 @@ class State(rx.State):
             return (art.get('origin', ''), art.get('claims', []),
                     art.get('data_points', []))
 
+        def _beat_script_view(row):
+            try:
+                bs = json.loads(row.get('beat_script') or '{}')
+            except (json.JSONDecodeError, TypeError):
+                bs = {}
+            beats = bs.get('beats', [])
+            duration = sum(b.get('target_duration_sec', 0) for b in beats)
+            return bs.get('title', ''), beats, duration
+
         videos = []
         for row in rows_dicts:
             dossier, core, readable = _research_view(row)
             art_origin, art_claims, art_dps = _artifact_view(row)
+            bs_title, bs_beats, bs_duration = _beat_script_view(row)
             videos.append(VideoModel(
                 id=row['id'],
                 topic=row['topic'],
@@ -445,6 +471,12 @@ class State(rx.State):
                 artifact_claims=art_claims,
                 artifact_data_points=art_dps,
                 use_degraded_model=bool(row.get('use_degraded_model', 0)),
+                beat_script_json=row.get('beat_script') or "",
+                beat_script_beats=bs_beats,
+                beat_script_title=bs_title,
+                beat_script_duration=bs_duration,
+                beats_json_str=row.get("beats_json") or "",
+                storyboard_beats=parse_storyboard_beats(row.get("beats_json")),
             ))
         self.videos = videos
 

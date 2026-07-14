@@ -9,6 +9,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from nodes.research import node0_research
+from nodes.beat_script import node1b_beat_script
+from nodes.storyboard import node3b_storyboard
 from nodes.scripting import node1_scripting
 from nodes.voice import node2_voice
 from nodes.asset_fetcher import node3_asset_fetcher
@@ -51,6 +53,12 @@ def main():
         try:
             # Node 0: Research (long-form pipeline)
             node0_research.run()
+
+            # Node 1b: Beat Script (long-form pipeline)
+            node1b_beat_script.run()
+
+            # Node 3b: Storyboard (long-form pipeline)
+            node3b_storyboard.run()
 
             # Node 1: Scripting (Gemini API)
             node1_scripting.run()

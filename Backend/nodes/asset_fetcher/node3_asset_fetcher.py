@@ -38,8 +38,8 @@ def fetch_from_pexels(keyword, min_duration=0, portrait=True):
     if not PEXELS_API_KEY:
         raise Exception("PEXELS_API_KEY not set")
 
-    orientation = "&orientation=portrait" if portrait else ""
-    url = f"https://api.pexels.com/videos/search?query={keyword}{orientation}&per_page=8"
+    orientation = "portrait" if portrait else "landscape"
+    url = f"https://api.pexels.com/videos/search?query={keyword}&orientation={orientation}&per_page=8"
     headers = {"Authorization": PEXELS_API_KEY}
     response = requests.get(url, headers=headers, timeout=15)
     response.raise_for_status()
@@ -51,10 +51,13 @@ def fetch_from_pexels(keyword, min_duration=0, portrait=True):
         dur = video.get('duration', 0)
         if dur < min_duration:
             continue
-        files = [f for f in video['video_files'] if f['width'] <= 1080 and f['height'] <= 1920]
+        max_width, max_height = ((1080, 1920) if portrait else (1920, 1080))
+        files = [f for f in video['video_files']
+                 if f['width'] <= max_width and f['height'] <= max_height]
         if not files:
             files = video['video_files']
-        files = sorted(files, key=lambda x: (x['height'] > x['width'], x['width'] * x['height']), reverse=True)
+        preferred = [f for f in files if (f['height'] > f['width']) == portrait]
+        files = sorted(preferred or files, key=lambda x: x['width'] * x['height'], reverse=True)
         if files:
             candidates.append((sid, files[0]['link']))
 
@@ -291,8 +294,12 @@ def _prepare_licensed_media(entry, destination_path, duration, keep_audio):
     if result.returncode != 0 or not validate_clip(destination_path, entry.get('id', 'licensed media')):
         raise Exception(f"Could not prepare licensed media {entry.get('id')}")
 
-def _try_stock_query(keyword, destination_path, min_duration, used_sources, rejected_sources):
-    """Try cache, portrait and broad video providers, then a stock still."""
+def _try_stock_query(keyword, destination_path, min_duration, used_sources, rejected_sources,
+                     landscape_first=False):
+    """Try cache, video providers, then a stock still.
+
+    landscape_first=True puts PexelsBroad before PexelsPortrait (long-form).
+    """
     cp = cache_path(keyword)
     cache_key = f"cache:{hashlib.sha1(keyword.lower().strip().encode()).hexdigest()[:16]}"
     metadata_path = cp + '.json'
@@ -313,11 +320,18 @@ def _try_stock_query(keyword, destination_path, min_duration, used_sources, reje
             return {'provider': 'Cache', 'source_id': cached_source, 'query': keyword}
         os.remove(cp)
 
-    providers = (
-        ("PexelsPortrait", lambda q, d: fetch_from_pexels(q, d, portrait=True)),
-        ("PexelsBroad", lambda q, d: fetch_from_pexels(q, d, portrait=False)),
-        ("Pixabay", fetch_from_pixabay),
-    )
+    if landscape_first:
+        providers = (
+            ("PexelsBroad", lambda q, d: fetch_from_pexels(q, d, portrait=False)),
+            ("PexelsPortrait", lambda q, d: fetch_from_pexels(q, d, portrait=True)),
+            ("Pixabay", fetch_from_pixabay),
+        )
+    else:
+        providers = (
+            ("PexelsPortrait", lambda q, d: fetch_from_pexels(q, d, portrait=True)),
+            ("PexelsBroad", lambda q, d: fetch_from_pexels(q, d, portrait=False)),
+            ("Pixabay", fetch_from_pixabay),
+        )
     for provider_name, fetcher in providers:
         try:
             for source_id, url in fetcher(keyword, min_duration):

@@ -53,6 +53,8 @@ def migrate():
         ("format", "TEXT DEFAULT 'short'"),
         ("research_artifact", "TEXT"),
         ("use_degraded_model", "INTEGER DEFAULT 0"),
+        ("beat_script", "TEXT"),
+        ("beats_json", "TEXT"),
     ]
     for col, defn in migrations:
         try:
