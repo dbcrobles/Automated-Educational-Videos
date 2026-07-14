@@ -2,7 +2,10 @@
 import reflex as rx
 
 from .state import State, VideoModel, ACCOUNT_IDS
-from .panels import research_artifact_panel, beat_script_panel, storyboard_panel
+from .panels import (
+    research_artifact_panel, beat_script_panel, storyboard_panel, narration_panel,
+)
+from .final_qa_panel import final_qa_panel
 
 
 def toggle_row(label: str, icon: str, state_val, handler) -> rx.Component:
@@ -50,9 +53,9 @@ def status_badge(status: str) -> rx.Component:
         make_badge("Awaiting_Narration","🎙️ Awaiting Narration",  "teal"),
         make_badge("Pending_Script",    "⚙️  Scripting…",        "indigo"),
         make_badge("QA_Script",         "✋ Awaiting Approval",   "orange"),
-        make_badge("Pending_Voice",     "🎙️  Voiceover…",        "violet"),
         make_badge("Pending_Assets",    "📦 Fetching Assets…",    "blue"),
         make_badge("Pending_Render",    "🎬 Rendering…",          "purple"),
+        make_badge("Pending_LongRender","🎬 Long Render…",       "purple"),
         make_badge("QA_Final",          "👁️  Final Check",        "amber"),
         make_badge("Ready_To_Publish",  "📡 Publishing…",         "teal"),
         make_badge("Published",         "✅ Published",            "green"),
@@ -394,6 +397,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                         ),
                     ),
                     source_links(video),
+                    final_qa_panel(video),
                     # ── Targeted send-back with note ──────────────────
                     rx.box(
                         rx.vstack(
@@ -423,14 +427,6 @@ def render_video_card(video: VideoModel) -> rx.Component:
                                     color_scheme="blue", variant="soft", size="2",
                                     title="Re-runs research and currentness checks, then rewrites.",
                                     on_click=lambda: State.refresh_research(video.id),
-                                ),
-                                rx.button(
-                                    "↩ Re-record Voice",
-                                    color_scheme="orange",
-                                    variant="soft",
-                                    size="2",
-                                    title="Re-records voiceover only — skips scripting. Uses ElevenLabs.",
-                                    on_click=lambda: State.reject_to_voiceover(video.id),
                                 ),
                                 rx.button(
                                     "↩ Replace Visuals",
@@ -493,6 +489,9 @@ def render_video_card(video: VideoModel) -> rx.Component:
             # ── QA_Storyboard: review storyboard (extracted to storyboard_panel) ──
             storyboard_panel(video),
 
+            # ── Awaiting_Narration: owner recording script + upload ──
+            narration_panel(video),
+
             # ── Paused_Cost: three choices ────────────────────────────
             rx.cond(
                 video.status == "Paused_Cost",
@@ -532,6 +531,7 @@ def render_video_card(video: VideoModel) -> rx.Component:
                 (video.status != "QA_Research") &
                 (video.status != "QA_BeatScript") &
                 (video.status != "QA_Storyboard") &
+                (video.status != "Awaiting_Narration") &
                 (video.status != "Paused_Cost") &
                 (video.status != "Published"),
                 rx.hstack(
