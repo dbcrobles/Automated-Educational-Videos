@@ -303,7 +303,7 @@ def _normalize_dossier(dossier, grounding_responses=()):
     dossier['currentness_warnings'] = warnings
     return dossier
 
-def _audit_currentness(client, topic, dossier, video_id):
+def _audit_currentness(client, topic, dossier, video_id, cost_stage='script'):
     """Search specifically for changes after the core sources before scripting."""
     print("Node 1: Pass 3b (Currentness and thesis-expansion audit)...")
     response = client.models.generate_content(
@@ -316,7 +316,7 @@ def _audit_currentness(client, topic, dossier, video_id):
             temperature=0.1,
         ),
     )
-    database.add_script_cost(video_id, COST_CURRENTNESS_CALL)
+    database.log_cost(video_id, COST_CURRENTNESS_CALL, cost_stage)
     if not response.text:
         raise Exception("Currentness audit returned no research dossier.")
     return _normalize_dossier(json.loads(response.text), [response]), response
@@ -420,7 +420,7 @@ def _deep_research(client, topic, anchor_urls, research_profile, locate_by_searc
         ),
     )
 
-def _build_research_dossier(client, topic, research_profile, video_id):
+def _build_research_dossier(client, topic, research_profile, video_id, cost_stage='script'):
     """Run expensive research once and return a checkpointable dossier."""
     print(f"Node 1: Pass 1 (Source scout) for '{topic}'...")
     scout_response = client.models.generate_content(
@@ -433,7 +433,7 @@ def _build_research_dossier(client, topic, research_profile, video_id):
             response_schema=SourceScout,
         ),
     )
-    database.add_script_cost(video_id, COST_SCOUT_CALL)
+    database.log_cost(video_id, COST_SCOUT_CALL, cost_stage)
     scout_text = scout_response.text or ''
     candidates = json.loads(scout_text or '{}').get('candidates', [])
     candidates = [candidate for candidate in candidates
@@ -454,7 +454,7 @@ def _build_research_dossier(client, topic, research_profile, video_id):
             temperature=0.1,
         ),
     )
-    database.add_script_cost(video_id, COST_CURATE_CALL)
+    database.log_cost(video_id, COST_CURATE_CALL, cost_stage)
     anchor_choices = json.loads(curate_response.text or '{}').get('choices', [])[:2]
     anchors = _anchors_from_choices(anchor_choices, candidates)
     if not anchors:
@@ -466,7 +466,7 @@ def _build_research_dossier(client, topic, research_profile, video_id):
     def _deep_dive(fetch_urls, locate_by_search=False):
         response = _deep_research(client, topic, fetch_urls, research_profile,
                                   locate_by_search=anchors if locate_by_search else None)
-        database.add_script_cost(video_id, COST_DEEP_RESEARCH_CALL)
+        database.log_cost(video_id, COST_DEEP_RESEARCH_CALL, cost_stage)
         text = response.text
         failures = {}
         if text and not locate_by_search:
@@ -518,7 +518,7 @@ def _build_research_dossier(client, topic, research_profile, video_id):
                         temperature=0.1,
                     ),
                 )
-                database.add_script_cost(video_id, COST_CURATE_CALL)
+                database.log_cost(video_id, COST_CURATE_CALL, cost_stage)
                 retry_choices = json.loads(retry_response.text or '{}').get('choices', [])
                 replacements = _anchors_from_choices(
                     retry_choices, candidates, set(failed_ids) | set(selected_ids))
@@ -545,7 +545,7 @@ def _build_research_dossier(client, topic, research_profile, video_id):
         dossier['source_redirects'] = source_redirects
     dossier = _normalize_dossier(dossier, [scout_response, deep_response])
     original_anchors = dossier['anchors']
-    dossier, audit_response = _audit_currentness(client, topic, dossier, video_id)
+    dossier, audit_response = _audit_currentness(client, topic, dossier, video_id, cost_stage)
     audited_access = {_url_key(a.get('url')): a.get('access_url')
                       for a in dossier.get('anchors', [])}
     for anchor in original_anchors:

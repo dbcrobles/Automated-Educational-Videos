@@ -5,13 +5,16 @@ State + models live in state.py; reusable UI pieces in components.py.
 import reflex as rx
 
 from .state import State, VideoModel, ACCOUNT_IDS, POPULAR_VOICES
-from .components import toggle_row, section_label, render_video_card
+from .components import toggle_row, section_label, render_video_card, long_form_creator
 
 
 # ─── PAGES ────────────────────────────────────────────────────────────────────
 
 def pipeline_tab() -> rx.Component:
     return rx.vstack(
+        # ── Long-Form Video Creator ─────────────────────────────────
+        long_form_creator(),
+
         # ── Create New Video Card ────────────────────────────────────
         rx.box(
             rx.vstack(

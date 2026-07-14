@@ -16,6 +16,8 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 # Add parent directory to access database and router
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Backend'))
 from database import database
+from schemas.research_artifact import ResearchArtifact
+from nodes.research.prompts import paste_normalize_prompt
 
 POPULAR_VOICES = {
     "Brian (American, deep)": "nPczCjzI2devNBz1zQrb",
@@ -47,20 +49,25 @@ GEMINI_MODEL = "gemini-3.1-pro"
 
 # Pipeline stage order for progress bar display
 PIPELINE_STAGES = [
+    "Pending_Research", "QA_Research", "Pending_BeatScript",
     "Pending_Script", "QA_Script",
     "Pending_Voice", "Pending_Assets", "Pending_Render",
     "QA_Final", "Ready_To_Publish", "Published"
 ]
 
 STATUS_META = {
+    "Pending_Research":  {"label": "Researching…",     "color": "cyan"},
+    "QA_Research":       {"label": "Research QA",      "color": "blue"},
+    "Pending_BeatScript":{"label": "Awaiting Beats",   "color": "indigo"},
     "Pending_Script":    {"label": "Scripting…",      "color": "indigo"},
     "QA_Script":         {"label": "Awaiting Approval","color": "orange"},
-    "Pending_Voice": {"label": "Voiceover…",       "color": "violet"},
+    "Pending_Voice":     {"label": "Voiceover…",       "color": "violet"},
     "Pending_Assets":    {"label": "Fetching Assets…", "color": "blue"},
     "Pending_Render":    {"label": "Rendering…",       "color": "purple"},
     "QA_Final":          {"label": "Final Check",      "color": "amber"},
     "Ready_To_Publish":  {"label": "Publishing…",      "color": "teal"},
     "Published":         {"label": "Published ✓",      "color": "green"},
+    "Paused_Cost":       {"label": "Paused (Cost)",    "color": "yellow"},
     "Failed":            {"label": "Failed",            "color": "red"},
 }
 
@@ -103,6 +110,11 @@ class VideoModel(BaseModel):
     core_sources: list[SourceLinkModel] = []
     readable_sources: list[SourceLinkModel] = []
     currentness_warnings: list[str] = []
+    video_format: str = "short"
+    artifact_origin: str = ""
+    artifact_claims: list[dict] = []
+    artifact_data_points: list[dict] = []
+    use_degraded_model: bool = False
 
 class BatchSplitOutput(BaseModel):
     sub_topics: list[str]
@@ -209,6 +221,108 @@ class State(rx.State):
     def set_is_sponsored(self, val: bool):
         self.is_sponsored = val
 
+    # Long-form creation fields
+    long_form_topic: str = ""
+    research_mode: str = "automated"  # "automated" or "paste"
+    deep_research_paste: str = ""
+    is_processing_paste: bool = False
+
+    @rx.event
+    def set_long_form_topic(self, val: str):
+        self.long_form_topic = val
+
+    @rx.event
+    def set_research_mode(self, val: str):
+        self.research_mode = val
+
+    @rx.event
+    def set_deep_research_paste(self, val: str):
+        self.deep_research_paste = val
+
+    def add_long_form_video(self):
+        """Create a long-form video row — automated path queues for Node 0."""
+        if not self.long_form_topic:
+            return
+        conn = database.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO videos (topic, account_id, format, status) VALUES (?, ?, 'long', 'Pending_Research')",
+            (self.long_form_topic, self.new_category))
+        conn.commit()
+        conn.close()
+        self.long_form_topic = ""
+        self.load_videos()
+
+    def paste_deep_research(self):
+        """Paste path: one Gemini call normalizes the export into a ResearchArtifact."""
+        if not self.long_form_topic or not self.deep_research_paste:
+            return
+        self.is_processing_paste = True
+        yield
+        try:
+            api_key = os.environ.get("GEMINI_API_KEY")
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=paste_normalize_prompt(self.long_form_topic, self.deep_research_paste),
+                config=genai.types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ResearchArtifact,
+                    temperature=0.2,
+                ),
+            )
+            artifact = ResearchArtifact.model_validate_json(response.text)
+            conn = database.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO videos (topic, account_id, format, status, research_artifact) "
+                "VALUES (?, ?, 'long', 'QA_Research', ?)",
+                (self.long_form_topic, self.new_category, artifact.model_dump_json()))
+            video_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            database.log_cost(video_id, 0.02, 'research',
+                              provider='google', model='gemini-3.5-flash')
+        except Exception as e:
+            print(f"Paste normalization failed: {e}")
+        self.long_form_topic = ""
+        self.deep_research_paste = ""
+        self.is_processing_paste = False
+        self.load_videos()
+
+    def approve_research(self, video_id: int):
+        database.update_video(video_id, {'status': 'Pending_BeatScript'})
+        self.load_videos()
+
+    def rerun_research(self, video_id: int):
+        database.update_video(video_id, {
+            'status': 'Pending_Research', 'error_message': None,
+            'research_dossier': None, 'research_artifact': None,
+        })
+        self.load_videos()
+
+    def repaste_research(self, video_id: int):
+        """Clear the artifact so the card shows the paste form again."""
+        database.update_video(video_id, {
+            'research_artifact': None, 'error_message': None,
+        })
+        self.load_videos()
+
+    def cost_continue(self, video_id: int):
+        database.update_video(video_id, {'status': 'Pending_Research', 'error_message': None})
+        self.load_videos()
+
+    def cost_degrade(self, video_id: int):
+        database.update_video(video_id, {
+            'status': 'Pending_Research', 'error_message': None,
+            'use_degraded_model': 1})
+        self.load_videos()
+
+    def cost_stop(self, video_id: int):
+        """Keep what's built — leave Paused_Cost status, just clear the error message."""
+        database.update_video(video_id, {'error_message': None})
+        self.load_videos()
+
     def on_load(self):
         self.load_videos()
         self.load_intros()
@@ -280,9 +394,18 @@ class State(rx.State):
                                    for url in json.loads(row.get('script_sources') or '[]')]
             return dossier, core, readable
 
+        def _artifact_view(row):
+            try:
+                art = json.loads(row.get('research_artifact') or '{}')
+            except (json.JSONDecodeError, TypeError):
+                art = {}
+            return (art.get('origin', ''), art.get('claims', []),
+                    art.get('data_points', []))
+
         videos = []
         for row in rows_dicts:
             dossier, core, readable = _research_view(row)
+            art_origin, art_claims, art_dps = _artifact_view(row)
             videos.append(VideoModel(
                 id=row['id'],
                 topic=row['topic'],
@@ -317,6 +440,11 @@ class State(rx.State):
                 core_sources=core,
                 readable_sources=readable,
                 currentness_warnings=dossier.get('currentness_warnings', []),
+                video_format=row.get('format') or 'short',
+                artifact_origin=art_origin,
+                artifact_claims=art_claims,
+                artifact_data_points=art_dps,
+                use_degraded_model=bool(row.get('use_degraded_model', 0)),
             ))
         self.videos = videos
 

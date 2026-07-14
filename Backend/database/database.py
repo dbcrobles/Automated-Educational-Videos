@@ -50,6 +50,9 @@ def migrate():
         ("storyboard_draft", "TEXT"),
         ("script_cost_estimate", "REAL DEFAULT 0"),
         ("visual_qa_result", "TEXT"),
+        ("format", "TEXT DEFAULT 'short'"),
+        ("research_artifact", "TEXT"),
+        ("use_degraded_model", "INTEGER DEFAULT 0"),
     ]
     for col, defn in migrations:
         try:

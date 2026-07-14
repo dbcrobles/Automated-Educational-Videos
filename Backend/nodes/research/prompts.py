@@ -49,6 +49,21 @@ def deep_research_prompt(topic, anchor_urls, research_profile, access_instructio
     """
 
 
+def paste_normalize_prompt(topic, pasted_text):
+    return f"""
+    Convert the following Gemini Deep Research export about "{topic}" into a structured
+    research artifact. Extract every distinct factual claim and link it to its source.
+    For each claim, include the source name, URL, and a short paraphrase (no long quotes).
+    Identify numeric data points suitable for charting — each needs a label, unit, 2-6
+    chart points (label + value), source URL, and an optional note/caveat.
+    Set origin to "manual_deep_research" and include today's date as as_of_date.
+    Put any tensions, unknowns, or currentness cautions in the notes field.
+
+    DEEP RESEARCH EXPORT:
+    {pasted_text[:50000]}
+    """
+
+
 def currentness_audit_prompt(topic, dossier):
     return f"""
     Today is {date.today().isoformat()}. Audit this research dossier about "{topic}" for currentness:
