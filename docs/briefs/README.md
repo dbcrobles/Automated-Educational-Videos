@@ -63,12 +63,16 @@ New statuses must be added to `PIPELINE_STAGES` / `STATUS_META` (in
   $4.00 hard video-level tiers and the `degraded_model`.
 
 ## Brief order
-| Phase | File | Depends on |
+All eight phase briefs are **complete and archived** in `docs/archive/`
+(along with their handoff notes and test logs). This README stays as the
+living record of project conventions for future work sessions.
+
+| Phase | File (archived) | Depends on |
 |---|---|---|
-| 2 | `phase2_draft.md` | Phase 1 |
-| 3 | `phase3_beat_script.md` | Phase 2 |
-| 4 | `phase4_storyboard.md` | Phase 3 |
-| 5 | `phase5_narration.md` | Phase 4 |
-| 6 | `phase6_remotion_longform.md` | Phase 5 |
-| 7 | `phase7_qa_reinjection.md` | Phase 6 |
-| 8 | `phase8_shorts_distribution.md` | Phase 7 |
+| 2 | `../archive/phase2_draft.md` | Phase 1 |
+| 3 | `../archive/phase3_beat_script.md` | Phase 2 |
+| 4 | `../archive/phase4_storyboard.md` | Phase 3 |
+| 5 | `../archive/phase5_narration.md` | Phase 4 |
+| 6 | `../archive/phase6_remotion_longform.md` | Phase 5 |
+| 7 | `../archive/phase7_qa_reinjection.md` | Phase 6 |
+| 8 | `../archive/phase8_shorts_distribution.md` | Phase 7 |

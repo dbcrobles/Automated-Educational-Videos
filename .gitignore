@@ -35,6 +35,8 @@ Frontend/assets/preview_*.mp4
 # Stray/legacy local DBs
 Backend/database/*.db
 
-# Runtime heartbeat
+# Runtime heartbeat & logs
 Backend/orchestrator.heartbeat
 Backend/orchestrator.lock
+Backend/orchestrator.log
+Frontend/dashboard.log

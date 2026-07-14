@@ -71,9 +71,9 @@ def research_artifact_panel(video: VideoModel) -> rx.Component:
                     rx.text("Claims", size="1", weight="bold", color="gray"),
                     rx.foreach(video.artifact_claims, lambda claim: rx.box(
                         rx.vstack(
-                            rx.text(claim["text"], size="2"),
-                            rx.foreach(claim["sources"], lambda src: rx.link(
-                                src["name"], href=src["url"], is_external=True,
+                            rx.text(claim.text, size="2"),
+                            rx.foreach(claim.sources, lambda src: rx.link(
+                                src.name, href=src.url, is_external=True,
                                 color="blue", size="1")),
                             align="start", spacing="1",
                         ),
@@ -89,10 +89,10 @@ def research_artifact_panel(video: VideoModel) -> rx.Component:
                     rx.text("Data Points (chart-ready)", size="1", weight="bold", color="gray"),
                     rx.foreach(video.artifact_data_points, lambda dp: rx.box(
                         rx.vstack(
-                            rx.text(dp["label"], size="2", weight="medium"),
-                            rx.text(f"Unit: {dp['unit']}", size="1", color="gray"),
-                            rx.foreach(dp["points"], lambda pt: rx.text(
-                                f"  • {pt['label']}: {pt['value']}", size="1")),
+                            rx.text(dp.label, size="2", weight="medium"),
+                            rx.text(f"Unit: {dp.unit}", size="1", color="gray"),
+                            rx.foreach(dp.points, lambda pt: rx.text(
+                                f"  • {pt.label}: {pt.value}", size="1")),
                             align="start", spacing="1",
                         ),
                         background="var(--cyan-1)", border_radius="6px",
@@ -168,38 +168,38 @@ def storyboard_panel(video: VideoModel) -> rx.Component:
             # ── Beats ────────────────────────────────────────────
             rx.foreach(video.storyboard_beats, lambda beat: rx.box(
                 rx.vstack(
-                    rx.text(beat["hook_label"], size="2", weight="bold", color="gray"),
-                    rx.text(beat["spoken_text"], size="2"),
-                    rx.foreach(beat["elements"], lambda el: rx.box(
+                    rx.text(beat.hook_label, size="2", weight="bold", color="gray"),
+                    rx.text(beat.spoken_text, size="2"),
+                    rx.foreach(beat.elements, lambda el: rx.box(
                         rx.cond(
-                            el["kind"] == "chart",
+                            el.kind == "chart",
                             rx.vstack(
-                                rx.text(f"📊 {el['chart']['title']}", size="2", weight="medium"),
-                                rx.text(f"Unit: {el['chart']['unit']}", size="1", color="gray"),
-                                rx.foreach(el["chart"]["points"], lambda pt: rx.text(
-                                    f"  • {pt['label']}: {pt['value']}", size="1")),
+                                rx.text(f"📊 {el.chart.title}", size="2", weight="medium"),
+                                rx.text(f"Unit: {el.chart.unit}", size="1", color="gray"),
+                                rx.foreach(el.chart.points, lambda pt: rx.text(
+                                    f"  • {pt.label}: {pt.value}", size="1")),
                                 align="start", spacing="1",
                             ),
                             rx.cond(
-                                el["kind"] == "broll",
+                                el.kind == "broll",
                                 rx.vstack(
                                     rx.video(
-                                        src=f"/storyboards/{video.id}/{el['src']}",
+                                        src=f"/storyboards/{video.id}/{el.src}",
                                         controls=True,
                                         width="100%",
                                         max_height="240px",
                                     ),
                                     rx.radio(
-                                        el["candidates"],
-                                        value=el["src"],
+                                        el.candidates,
+                                        value=el.src,
                                         on_change=lambda candidate: State.select_broll_candidate(
-                                            video.id, beat["order"], candidate),
+                                            video.id, beat.order, candidate),
                                         size="1",
                                     ),
                                     align="start", spacing="2",
                                 ),
                                 rx.cond(
-                                    el["realized"] == False,
+                                    ~el.realized,
                                     rx.text(
                                         "Unrealized — add in Remotion Studio",
                                         size="1", color="gray", font_style="italic",
@@ -284,25 +284,25 @@ def beat_script_panel(video: VideoModel) -> rx.Component:
                 rx.vstack(
                     rx.hstack(
                         rx.badge(
-                            beat["section"],
+                            beat.section,
                             color_scheme=rx.cond(
-                                beat["section"] == "intro", "cyan",
-                                rx.cond(beat["section"] == "discussion", "blue", "teal")),
+                                beat.section == "intro", "cyan",
+                                rx.cond(beat.section == "discussion", "blue", "teal")),
                             size="1",
                         ),
-                        rx.text(f"Beat {beat['order']} · {beat['target_duration_sec']:.0f}s", size="1", color="gray"),
+                        rx.text(f"Beat {beat.order} · {beat.target_duration_sec:.0f}s", size="1", color="gray"),
                         spacing="2", align="center",
                     ),
-                    rx.text(beat["hook_label"], size="2", weight="bold", color="gray"),
-                    rx.text(beat["spoken_text"], size="2"),
+                    rx.text(beat.hook_label, size="2", weight="bold", color="gray"),
+                    rx.text(beat.spoken_text, size="2"),
                     rx.hstack(
-                        rx.text(f"🎵 {beat['music_cue']}", size="1", color="gray"),
+                        rx.text(f"🎵 {beat.music_cue}", size="1", color="gray"),
                         rx.spacer(),
-                        rx.foreach(beat["elements"], lambda el: rx.badge(
-                            rx.cond(el["role"] == "primary", "🎯 ", "📎 ")
-                            + el["kind"]
-                            + rx.cond(el["kind"] == "chart", f" → {el['ref']}", ""),
-                            color_scheme=rx.cond(el["role"] == "primary", "blue", "gray"),
+                        rx.foreach(beat.elements, lambda el: rx.badge(
+                            rx.cond(el.role == "primary", "🎯 ", "📎 ")
+                            + el.kind
+                            + rx.cond(el.kind == "chart", f" → {el.ref}", ""),
+                            color_scheme=rx.cond(el.role == "primary", "blue", "gray"),
                             variant="soft", size="1",
                         )),
                         spacing="1", wrap="wrap", align="center", width="100%",

@@ -5,150 +5,20 @@ State + models live in state.py; reusable UI pieces in components.py.
 import reflex as rx
 
 from .state import State, VideoModel, ACCOUNT_IDS
-from .components import toggle_row, section_label, render_video_card, long_form_creator
+from .components import (
+    section_label, render_video_card, long_form_creator, filler_short_creator,
+)
 
 
 # ─── PAGES ────────────────────────────────────────────────────────────────────
 
 def pipeline_tab() -> rx.Component:
     return rx.vstack(
-        # ── Long-Form Video Creator ─────────────────────────────────
+        # ── Long-Form Video Creator (shorts are derived from published beats) ──
         long_form_creator(),
 
-        # ── Create New Video Card ────────────────────────────────────
-        rx.box(
-            rx.vstack(
-                rx.hstack(
-                    rx.heading("Create New Video", size="5", weight="bold"),
-                    rx.spacer(),
-                    rx.cond(
-                        State.is_generating,
-                        rx.hstack(
-                            rx.spinner(size="2"),
-                            rx.text("Generating topics…", size="2", color="gray"),
-                            spacing="2",
-                            align="center",
-                        ),
-                    ),
-                    align="center",
-                    width="100%",
-                ),
-
-                # Topic + Account row
-                rx.hstack(
-                    rx.input(
-                        placeholder="Topic (e.g. 'How the Alma Ata Declaration changed global health')",
-                        on_change=State.set_new_topic,
-                        value=State.new_topic,
-                        flex="3",
-                        size="3",
-                    ),
-                    rx.select(
-                        ACCOUNT_IDS,
-                        placeholder="Category",
-                        on_change=State.set_new_category,
-                        value=State.new_category,
-                        flex="1",
-                        size="3",
-                    ),
-                    rx.select(
-                        ["1", "3", "5"],
-                        placeholder="# Videos",
-                        on_change=State.set_batch_size,
-                        value=State.batch_size,
-                        width="100px",
-                        size="3",
-                    ),
-                    spacing="3",
-                    width="100%",
-                ),
-
-                rx.divider(margin_y="1"),
-
-                # Options in two columns
-                rx.grid(
-                    # Left column: Output options
-                    rx.vstack(
-                        section_label("Output Options"),
-                        toggle_row("Night Mode (Auto-Approve)",  "🌙", State.night_mode,        State.set_night_mode),
-                        toggle_row("Use Human Hook Intro",       "🎥", State.use_human_intro,   State.set_use_human_intro),
-                        align="start",
-                        spacing="2",
-                        width="100%",
-                    ),
-                    # Right column: Publish targets (3x3 grid)
-                    rx.vstack(
-                        section_label("Publish To"),
-                        rx.grid(
-                            toggle_row("YouTube",   "▶️", State.post_yt, State.set_post_yt),
-                            toggle_row("Instagram", "📸", State.post_ig, State.set_post_ig),
-                            toggle_row("TikTok",    "🎵", State.post_tt, State.set_post_tt),
-                            toggle_row("Snapchat",  "👻", State.post_snapchat, State.set_post_snapchat),
-                            toggle_row("X (Twitter)","🐦", State.post_x, State.set_post_x),
-                            toggle_row("Save Desk",  "💾", State.save_to_desktop, State.set_save_to_desktop),
-                            columns="2",
-                            spacing="4",
-                            width="100%",
-                        ),
-                        align="start",
-                        spacing="2",
-                        width="100%",
-                    ),
-                    columns="2",
-                    spacing="6",
-                    width="100%",
-                ),
-
-                rx.divider(margin_y="1"),
-                
-                # Content Config
-                rx.vstack(
-                    section_label("Content Config"),
-                    rx.grid(
-                        rx.vstack(
-                            rx.text("Custom CTA Text (Optional)", size="2", color="gray"),
-                            rx.input(placeholder="Overrides default CTA...", on_change=State.set_cta_text, value=State.cta_text, size="2", width="100%"),
-                            width="100%"
-                        ),
-                        rx.vstack(
-                            rx.text("Affiliate URL (X only)", size="2", color="gray"),
-                            rx.input(placeholder="https://...", on_change=State.set_affiliate_url, value=State.affiliate_url, size="2", width="100%"),
-                            width="100%"
-                        ),
-                        rx.vstack(
-                            rx.text("Compliance", size="2", color="gray"),
-                            toggle_row("Is Sponsored", "🎯", State.is_sponsored, State.set_is_sponsored),
-                            width="100%",
-                            padding_top="4"
-                        ),
-                        columns="3",
-                        spacing="4",
-                        width="100%"
-                    ),
-                    width="100%"
-                ),
-
-                rx.button(
-                    rx.cond(State.is_generating, "Generating Topics…", "🚀  Start Pipeline"),
-                    on_click=State.add_video,
-                    disabled=State.is_generating,
-                    size="3",
-                    color_scheme="blue",
-                    width="100%",
-                    margin_top="2",
-                ),
-
-                spacing="4",
-                align="stretch",
-                width="100%",
-            ),
-            background="white",
-            border="1px solid var(--gray-4)",
-            border_radius="12px",
-            padding="6",
-            width="100%",
-            box_shadow="0 1px 4px rgba(0,0,0,0.06)",
-        ),
+        # ── Filler short (tucked away — legacy automated pipeline) ──
+        filler_short_creator(),
 
         # ── Video Queue ──────────────────────────────────────────────
         rx.hstack(
@@ -172,7 +42,7 @@ def pipeline_tab() -> rx.Component:
                 rx.vstack(
                     rx.text("🎬", font_size="48px"),
                     rx.text("No videos in the queue yet.", size="3", color="gray", weight="medium"),
-                    rx.text("Enter a topic above and click Start Pipeline to begin.", size="2", color="gray"),
+                    rx.text("Create a long-form video above; derive shorts from its beats once published.", size="2", color="gray"),
                     align="center",
                     spacing="2",
                 ),
@@ -310,17 +180,7 @@ def settings_tab() -> rx.Component:
                     rx.input(on_change=State.set_default_cta_text, value=State.default_cta_text, size="2", width="100%"),
                     width="100%"
                 ),
-                rx.vstack(
-                    section_label("Snapchat Ad Account ID"),
-                    rx.input(on_change=State.set_snapchat_ad_account_id, value=State.snapchat_ad_account_id, size="2", width="100%"),
-                    width="100%"
-                ),
-                rx.vstack(
-                    section_label("X (Twitter) Handle"),
-                    rx.input(on_change=State.set_x_handle, value=State.x_handle, size="2", width="100%"),
-                    width="100%"
-                ),
-                columns="3",
+                columns="1",
                 spacing="4",
                 width="100%",
             ),

@@ -56,6 +56,7 @@ def status_badge(status: str) -> rx.Component:
         make_badge("Pending_Assets",    "📦 Fetching Assets…",    "blue"),
         make_badge("Pending_Render",    "🎬 Rendering…",          "purple"),
         make_badge("Pending_LongRender","🎬 Long Render…",       "purple"),
+        make_badge("Pending_ShortRender","📱 Short Render…",     "purple"),
         make_badge("QA_Final",          "👁️  Final Check",        "amber"),
         make_badge("Ready_To_Publish",  "📡 Publishing…",         "teal"),
         make_badge("Published",         "✅ Published",            "green"),
@@ -554,18 +555,38 @@ def render_video_card(video: VideoModel) -> rx.Component:
             # ── Published ─────────────────────────────────────────────
             rx.cond(
                 video.status == "Published",
-                rx.hstack(
-                    rx.text("🎉 Video successfully published to all selected platforms.", size="2", color="green"),
-                    rx.spacer(),
-                    rx.button(
-                        "🗑  Remove",
-                        color_scheme="red",
-                        variant="ghost",
-                        size="1",
-                        on_click=lambda: State.delete_video(video.id),
+                rx.vstack(
+                    rx.hstack(
+                        rx.text("🎉 Video successfully published to all selected platforms.", size="2", color="green"),
+                        rx.spacer(),
+                        rx.button(
+                            "🗑  Remove",
+                            color_scheme="red",
+                            variant="ghost",
+                            size="1",
+                            on_click=lambda: State.delete_video(video.id),
+                        ),
+                        align="center",
+                        width="100%",
                     ),
-                    align="center",
-                    width="100%",
+                    # Phase 8: derive a vertical short from any beat (re-render, not crop)
+                    rx.cond(
+                        (video.video_format == "long") & (video.storyboard_beats.length() > 0),
+                        rx.vstack(
+                            rx.text("📱 Create Short from beat", size="2", weight="bold", color="gray"),
+                            rx.hstack(
+                                rx.foreach(video.storyboard_beats, lambda beat: rx.button(
+                                    f"▶ {beat.hook_label}",
+                                    variant="soft", color_scheme="indigo", size="1",
+                                    title="Re-renders this beat as a 1080×1920 short — no LLM calls",
+                                    on_click=lambda: State.derive_short(video.id, beat.order),
+                                )),
+                                spacing="2", wrap="wrap", width="100%",
+                            ),
+                            align="start", spacing="2", width="100%",
+                        ),
+                    ),
+                    align="start", spacing="3", width="100%",
                 ),
             ),
 
@@ -650,4 +671,57 @@ def long_form_creator() -> rx.Component:
         padding="6",
         width="100%",
         box_shadow="0 1px 4px rgba(0,0,0,0.06)",
+    )
+
+
+def filler_short_creator() -> rx.Component:
+    """Tucked-away legacy pipeline: quick automated shorts to fill a thin week."""
+    return rx.box(
+        rx.hstack(
+            rx.text("📱 Filler short", size="2", weight="medium", color="gray"),
+            rx.text("— fully automated, for weeks the long-form can't fill", size="1", color="gray"),
+            rx.spacer(),
+            rx.button(
+                rx.cond(State.show_short_creator, "Hide", "Create one"),
+                variant="ghost", color_scheme="gray", size="1",
+                on_click=State.toggle_short_creator,
+            ),
+            align="center", width="100%",
+        ),
+        rx.cond(
+            State.show_short_creator,
+            rx.vstack(
+                rx.text(
+                    "AI writes the script and picks stock visuals; you still record the narration "
+                    "and approve at each QA gate.",
+                    size="1", color="gray",
+                ),
+                rx.hstack(
+                    rx.input(
+                        placeholder="Short topic (e.g. 'The 50/30/20 budget rule in 60 seconds')",
+                        on_change=State.set_short_form_topic,
+                        value=State.short_form_topic,
+                        flex="3", size="2",
+                    ),
+                    rx.select(
+                        ACCOUNT_IDS,
+                        on_change=State.set_new_category,
+                        value=State.new_category,
+                        flex="1", size="2",
+                    ),
+                    rx.button(
+                        "🚀 Queue Short",
+                        on_click=State.add_short_video,
+                        color_scheme="indigo", size="2",
+                    ),
+                    spacing="2", width="100%",
+                ),
+                align="start", spacing="2", width="100%", margin_top="2",
+            ),
+        ),
+        background="var(--gray-1)",
+        border="1px dashed var(--gray-5)",
+        border_radius="10px",
+        padding="3",
+        width="100%",
     )

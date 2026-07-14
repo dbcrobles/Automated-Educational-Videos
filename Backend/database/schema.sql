@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS videos (
     cta_text TEXT,
     is_sponsored INTEGER DEFAULT 0,
     compliance_metadata TEXT,
-    post_snapchat INTEGER DEFAULT 0,
-    post_x INTEGER DEFAULT 0,
     affiliate_url TEXT,
     error_message TEXT,
     auto_approve INTEGER DEFAULT 0,

@@ -50,28 +50,8 @@ def generate_platform_caption(video_record, platform):
     elif platform == 'youtube':
         return (f"{title}\n\n{cta}\n\nSources:\n{sources_str}\n\n"
                 f"This video was created with AI assistance.\n\n#Shorts")
-    elif platform == 'snapchat':
-        cap = hook_text
-        if len(cap) > 150: cap = cap[:147] + "..."
-        return cap
-    elif platform == 'x':
-        cap = f"{hook_text} [AI-Assisted]"
-        if affiliate_url: cap += f"\n{affiliate_url}"
-        return cap
     
     return f"{title}\n\n#shortform #viral #{account}"
-
-def publish_snapchat(video_record):
-    client_id = os.environ.get("SNAPCHAT_CLIENT_ID")
-    if not client_id: return
-    caption = generate_platform_caption(video_record, 'snapchat')
-    print(f"Snapchat Publisher: Uploaded to Spotlight with caption: {caption}")
-
-def publish_x(video_record):
-    api_key = os.environ.get("TWITTER_API_KEY")
-    if not api_key: return
-    caption = generate_platform_caption(video_record, 'x')
-    print(f"X Publisher: Posted tweet with caption: {caption}")
 
 def resolve_final_video(video_record):
     """The rendered deliverable: final_path (new) → assets/{id}/final.mp4 → legacy video_path."""
@@ -115,14 +95,7 @@ def publish_video(video_record):
     if video_record.get('post_yt'): platforms.append("youtube")
     if video_record.get('post_ig'): platforms.append("instagram")
     if video_record.get('post_tt'): platforms.append("tiktok")
-    
-    # Execute Custom Publishers
-    if video_record.get('post_snapchat'):
-        publish_snapchat(video_record)
-        
-    if video_record.get('post_x'):
-        publish_x(video_record)
-        
+
     if not platforms:
         print(f"Video {video_record['id']} has no WoopSocial platforms toggled ON. Skipping WoopSocial.")
         return True # Act as if it succeeded so it clears the queue
@@ -154,7 +127,12 @@ def publish_video(video_record):
 
 
 def cleanup_intermediates(video_record):
-    """After publish, delete per-video intermediates except final.mp4. Never fatal."""
+    """After publish, delete per-video intermediates except final.mp4. Never fatal.
+
+    Phase 8: long-form intermediates (beats.json, voiceover.mp3, captions.json)
+    are KEPT — derived shorts are re-rendered from them after publish."""
+    if video_record.get('format') == 'long':
+        return
     try:
         assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'assets')
         vid_dir = os.path.join(assets_dir, str(video_record['id']))
