@@ -8,6 +8,23 @@ import shutil
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import database
 
+def _readable_sources(script_data):
+    """Format titled citations, falling back to legacy raw URLs."""
+    details = script_data.get('source_details') or []
+    if details:
+        lines = []
+        for source in details:
+            label = "Core article" if source.get('role') == 'core' else "Supporting source"
+            title = source.get('title') or source.get('publisher') or "Source"
+            publisher = source.get('publisher') or ""
+            byline = f" ({publisher})" if publisher and publisher.lower() not in title.lower() else ""
+            url = source.get('access_url') or source.get('url')
+            if url:
+                lines.append(f"{label} — {title}{byline}: {url}")
+        if lines:
+            return "\n".join(lines)
+    return "\n".join(script_data.get('sources', []))
+
 def generate_platform_caption(video_record, platform):
     try:
         script_data = json.loads(video_record['script'])
@@ -16,8 +33,7 @@ def generate_platform_caption(video_record, platform):
         hook_text = ""
         if scenes and 'hook' in scenes[0] and scenes[0]['hook']:
             hook_text = scenes[0]['hook'].get('hook_text', '')
-        sources = script_data.get('sources', [])
-        sources_str = "\n".join(sources)
+        sources_str = _readable_sources(script_data)
     except:
         title = video_record['topic']
         hook_text = ""

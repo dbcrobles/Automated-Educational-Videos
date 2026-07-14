@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS videos (
     visual_qa_result TEXT
 );
 
+CREATE TABLE IF NOT EXISTS cost_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    provider TEXT,
+    model TEXT,
+    tokens_in INTEGER DEFAULT 0,
+    tokens_out INTEGER DEFAULT 0,
+    usd REAL NOT NULL,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS pipeline_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     video_id INTEGER NOT NULL,

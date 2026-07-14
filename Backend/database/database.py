@@ -6,6 +6,17 @@ import re
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'db.sqlite')
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'assets')
+PIPELINE_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'pipeline_config.json')
+
+def _cost_limits():
+    """Video-level ($soft, $hard) tiers from pipeline_config.json, with safe defaults."""
+    try:
+        with open(PIPELINE_CONFIG_PATH) as f:
+            limits = json.load(f).get('cost_limits', {})
+    except (OSError, json.JSONDecodeError):
+        limits = {}
+    return (float(limits.get('soft_warning_usd', 2.50)),
+            float(limits.get('hard_pause_usd', 4.00)))
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
@@ -80,6 +91,24 @@ def migrate():
         ON pipeline_errors(video_id, status, last_seen)
     """)
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cost_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            usd REAL NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cost_events_video ON cost_events(video_id)
+    """)
+    cursor.execute("""
         INSERT INTO pipeline_errors
             (video_id, node, error_code, fingerprint, message, attempt,
              cost_snapshot, status)
@@ -95,26 +124,69 @@ def migrate():
     conn.commit()
     conn.close()
 
-def add_cost(video_id, usd):
-    """Accumulate API cost estimate for a video."""
+def log_cost(video_id, usd, stage, provider=None, model=None,
+             tokens_in=0, tokens_out=0, note=None):
+    """One ledger row per API call, plus the cached per-video totals the
+    dashboard badges read. Returns cost_status() so callers can react to the
+    video-level tiers ('ok' | 'soft' | 'hard') without a second query."""
     conn = get_connection()
+    conn.execute("""
+        INSERT INTO cost_events
+            (video_id, stage, provider, model, tokens_in, tokens_out, usd, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (video_id, stage, provider, model, tokens_in, tokens_out, usd, note))
     conn.execute(
         "UPDATE videos SET api_cost_estimate = COALESCE(api_cost_estimate, 0) + ? WHERE id = ?",
         (usd, video_id))
+    if stage == 'script':
+        conn.execute(
+            "UPDATE videos SET script_cost_estimate = COALESCE(script_cost_estimate, 0) + ? WHERE id = ?",
+            (usd, video_id))
     conn.commit()
     conn.close()
+    return cost_status(video_id)
 
-def add_script_cost(video_id, usd):
-    """Track Node 1 spend separately so research retries stay visible."""
+def add_cost(video_id, usd, stage='legacy', **details):
+    """Backwards-compatible wrapper; prefer log_cost with a real stage name."""
+    return log_cost(video_id, usd, stage, **details)
+
+def add_script_cost(video_id, usd, **details):
+    """Node 1 spend; kept so existing call sites gain ledger rows unchanged."""
+    return log_cost(video_id, usd, 'script', **details)
+
+def cost_status(video_id):
+    """'ok' below the soft tier, 'soft' between tiers, 'hard' at/above hard."""
+    soft, hard = _cost_limits()
     conn = get_connection()
-    conn.execute("""
-        UPDATE videos
-        SET api_cost_estimate = COALESCE(api_cost_estimate, 0) + ?,
-            script_cost_estimate = COALESCE(script_cost_estimate, 0) + ?
-        WHERE id = ?
-    """, (usd, usd, video_id))
-    conn.commit()
+    row = conn.execute(
+        "SELECT COALESCE(api_cost_estimate, 0) FROM videos WHERE id = ?",
+        (video_id,)).fetchone()
     conn.close()
+    total = row[0] if row else 0
+    return 'hard' if total >= hard else 'soft' if total >= soft else 'ok'
+
+def pause_for_cost(video_id, stage):
+    """Hard tier reached: pause the video WITHOUT destroying anything.
+
+    Sunk spend already produced usable checkpoints (research, beats, assets).
+    The dashboard offers three explicit choices: continue as planned, finish
+    remaining stages on the cheaper degraded_model, or stop and keep what's
+    built. The system never decides for the owner by deleting work."""
+    soft, hard = _cost_limits()
+    update_video(video_id, {
+        'status': 'Paused_Cost',
+        'error_message': (f"{stage}: spend reached the ${hard:.2f} hard tier. "
+                          "Choose: continue, finish on a cheaper model, or stop and keep."),
+    })
+
+def get_script_cost(video_id):
+    """Return the current Node 1 spend so cost caps use fresh numbers, not stale rows."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COALESCE(script_cost_estimate, 0) FROM videos WHERE id = ?",
+        (video_id,)).fetchone()
+    conn.close()
+    return row[0] if row else 0
 
 def record_pipeline_error(video_id, node, error_code, message, details=None,
                           attempt=1, auto_recovered=False):

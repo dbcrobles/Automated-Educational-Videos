@@ -1,0 +1,8 @@
+{
+  "_comment": "Video-level cost tiers. Soft = display-only warning in the dashboard; hard = pipeline pauses (status Paused_Cost) and the owner explicitly chooses: continue as planned, finish remaining stages on degraded_model, or stop and keep what's built. Nothing is ever auto-deleted. Node-level caps (e.g. Node 1's script caps) still apply beneath these.",
+  "cost_limits": {
+    "soft_warning_usd": 2.5,
+    "hard_pause_usd": 4.0
+  },
+  "degraded_model": "gemini-3.5-flash"
+}
